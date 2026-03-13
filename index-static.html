@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SANGITA LOGISTICS – Billing (static)</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-wrap">
+    <header class="header">
+      <button type="button" class="menu-btn" aria-label="Open menu">
+        <span></span><span></span><span></span>
+      </button>
+      <h1 class="logo">SANGITA LOGISTICS</h1>
+      <nav class="nav">
+        <a href="#bills">Bills</a>
+        <a href="#clients">Clients</a>
+        <a href="#summary">Summary</a>
+      </nav>
+    </header>
+
+    <main class="main">
+      <section class="bill-card" id="bill-view">
+        <div class="block company-block">
+          <h2 class="company-name">SANGITA LOGISTICS</h2>
+          <p class="company-address">Balaji Crest, Flat No. 1304, Plot No. 57, Sector 17, Roadpali, Kalamboli, Navi Mumbai – 410218</p>
+          <p class="company-meta"><span>PAN:</span> DRBPS5123R &nbsp; <span>Mobile:</span> 8652082121 / 9702082121</p>
+        </div>
+
+        <div class="block bill-info-block">
+          <div class="bill-info-row">
+            <div class="bill-info-item">
+              <span class="label">Bill No.</span>
+              <span class="value" id="bill-number">146</span>
+            </div>
+            <div class="bill-info-item">
+              <span class="label">Date</span>
+              <span class="value" id="bill-date">05.02.2026</span>
+            </div>
+            <div class="bill-info-item">
+              <span class="label">M/s</span>
+              <span class="value" id="client-name">Calcutta Carriers</span>
+            </div>
+            <div class="bill-info-item">
+              <span class="label">Location</span>
+              <span class="value" id="client-location">Kalamboli</span>
+            </div>
+          </div>
+          <div class="route-row">
+            <span class="label">From</span>
+            <span class="value" id="route-from">Kalamboli</span>
+            <span class="label">To</span>
+            <span class="value" id="route-to">Khopoli</span>
+          </div>
+        </div>
+
+        <div class="block table-block">
+          <div class="table-scroll">
+            <table class="transport-table" id="transport-table">
+              <thead>
+                <tr>
+                  <th>Sr. no</th>
+                  <th>Date</th>
+                  <th>Vehicle No</th>
+                  <th>Invoice no</th>
+                  <th>From</th>
+                  <th>To</th>
+                  <th>Weight</th>
+                  <th>Rate</th>
+                  <th>Total</th>
+                  <th>Advance</th>
+                  <th>Balance</th>
+                  <th class="no-print">Action</th>
+                </tr>
+              </thead>
+              <tbody id="transport-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="block totals-block">
+          <div class="grand-total-row">
+            <span class="grand-total-label">Grand Total</span>
+            <span class="grand-total-value" id="grand-total">₹ 0</span>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn btn-secondary" id="btn-add-entry">+ Add entry</button>
+            <button type="button" class="btn btn-primary" id="btn-export-pdf">Export PDF</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="modal" id="entry-modal" aria-hidden="true">
+        <div class="modal-backdrop"></div>
+        <div class="modal-box">
+          <h3 class="modal-title" id="modal-title">Add transport entry</h3>
+          <form id="entry-form" class="entry-form">
+            <div class="form-grid">
+              <label><span>Date</span><input type="date" name="date" required></label>
+              <label><span>Vehicle No</span><input type="text" name="vehicle_number" placeholder="e.g. MH46 AU 5188"></label>
+              <label><span>Invoice no</span><input type="text" name="invoice_number" required></label>
+              <label><span>From</span><input type="text" name="from" id="entry-from" placeholder="Kalamboli"></label>
+              <label><span>To</span><input type="text" name="to" id="entry-to" placeholder="Khopoli"></label>
+              <label><span>Weight</span><input type="number" name="weight" min="0" step="1" placeholder="0"></label>
+              <label><span>Rate (₹)</span><input type="number" name="rate" min="0" step="1" required></label>
+              <label><span>Advance (₹)</span><input type="number" name="advance" min="0" step="1" value="0"></label>
+            </div>
+            <input type="hidden" name="entry_id" value="">
+            <div class="form-actions">
+              <button type="button" class="btn btn-secondary btn-cancel">Cancel</button>
+              <button type="submit" class="btn btn-primary">Save</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <p>Billing software – SANGITA LOGISTICS</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
