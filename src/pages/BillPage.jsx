@@ -4,10 +4,12 @@ import { useApp } from '../context/AppContext'
 import Header from '../components/Header'
 import CompanyBlock from '../components/CompanyBlock'
 import BillInfoBlock from '../components/BillInfoBlock'
-import TransportTable from '../components/TransportTable'
+import TransportTable, { buildPdfColumnLayout, FIXED_HEADERS } from '../components/TransportTable'
 import TotalsBlock from '../components/TotalsBlock'
 import EntryModal from '../components/EntryModal'
-import { grandTotal } from '../utils/billing'
+import { grandTotal, formatDate, rowTotal, rowBalance } from '../utils/billing'
+
+const ROWS_PER_PAGE = 15
 
 let nextEntryId = 1000
 
@@ -214,39 +216,182 @@ export default function BillPage() {
   const billCardRef = useRef(null)
 
   const handleExportPdf = useCallback(() => {
-    const el = billCardRef.current
-    if (!el) return
+    if (!company || !bill) return
     import('html2pdf.js').then(({ default: html2pdf }) => {
-      const clone = el.cloneNode(true)
-      clone.querySelectorAll('.no-print').forEach((n) => n.remove())
+      const pdfLayout = buildPdfColumnLayout(customColumns)
+      const entriesList = bill.entries ?? []
+      const chunks = []
+      for (let i = 0; i < entriesList.length; i += ROWS_PER_PAGE) {
+        chunks.push(entriesList.slice(i, i + ROWS_PER_PAGE))
+      }
+      if (chunks.length === 0) chunks.push([])
+      const totalGrand = grandTotal(entriesList)
+
+      const renderFixedCell = (row, index, key) => {
+        const tot = rowTotal(row)
+        const bal = rowBalance(row)
+        const advanceStr = row.advance ? String(row.advance) : '—'
+        switch (key) {
+          case 1: return index + 1
+          case 2: return formatDate(row.date)
+          case 3: return row.vehicle_number || '—'
+          case 4: return row.invoice_number ?? '—'
+          case 5: return row.weight ?? '—'
+          case 6: return row.rate ?? '—'
+          case 7: return tot
+          case 8: return advanceStr
+          case 9: return bal
+          default: return '—'
+        }
+      }
+
+      const root = document.createElement('div')
+      root.className = 'pdf-bill-root'
       const pdfStyles = document.createElement('style')
       pdfStyles.textContent = `
-        .bill-card { width: 100% !important; box-sizing: border-box; }
-        .bill-card .table-scroll { overflow: visible !important; width: 100% !important; max-width: none !important; margin: 0 !important; }
-        .bill-card .transport-table { width: 100% !important; table-layout: fixed !important; font-size: 11px !important; }
-        .bill-card .transport-table th, .bill-card .transport-table td { padding: 5px 6px !important; box-sizing: border-box; }
-        .bill-card .transport-table th { width: auto !important; }
+        .pdf-bill-root { width: 100%; box-sizing: border-box; }
+        .pdf-page { page-break-after: always; }
+        .pdf-page:last-child { page-break-after: auto; }
+        .pdf-bill-root .company-block { padding: 0.35rem 0 0.2rem 0 !important; margin-bottom: 0.2rem !important; border-bottom: none !important; }
+        .pdf-bill-root .company-block .company-name { margin: 0 0 0.15em !important; font-size: 2.65rem !important; font-weight: 900 !important; color: #b91c1c !important; }
+        .pdf-bill-root .company-block .company-address { margin: 0 0 0.2em !important; font-size: 1.25rem !important; line-height: 1.3 !important; }
+        .pdf-bill-root .company-block .company-meta { margin: 0 !important; font-size: 1.2rem !important; }
+        .pdf-bill-root .bill-info-block { padding: 0.2rem 0 0.35rem 0 !important; margin-bottom: 0 !important; border-bottom: none !important; gap: 0.25rem !important; }
+        .pdf-bill-root .bill-info-block .bill-info-row { gap: 0.35rem 1rem !important; }
+        .pdf-bill-root .bill-info-block .bill-info-item .label { font-size: 0.6rem !important; }
+        .pdf-bill-root .bill-info-block .bill-info-item .value { font-size: 0.85rem !important; }
+        .pdf-bill-root .table-scroll { overflow: visible !important; width: 100% !important; margin: 0 !important; }
+        .pdf-bill-root .transport-table { width: 100% !important; table-layout: fixed !important; font-size: 11px !important; border-collapse: collapse; }
+        .pdf-bill-root .transport-table th, .pdf-bill-root .transport-table td { padding: 5px 6px !important; box-sizing: border-box; border-bottom: 1px solid #ccc; text-align: center !important; }
+        .pdf-bill-root .transport-table th.col-sr-no, .pdf-bill-root .transport-table td.col-sr-no { width: 3.25rem !important; min-width: 3.25rem !important; max-width: 3.25rem !important; }
+        .pdf-bill-root .transport-table th { font-weight: 600; background: #f5f5f5; }
+        .pdf-bill-root .transport-table .num { text-align: center !important; }
+        .pdf-bill-root .transport-table tr.pdf-page-total td { font-weight: 600; border-top: 2px solid #333; padding-top: 6px !important; }
+        .pdf-bill-root .transport-table tr.pdf-grand-total-row td { font-weight: 700; border-top: 2px solid #111; padding-top: 8px !important; font-size: 0.95rem !important; }
+        .pdf-bill-root .transport-table tr.pdf-grand-total-row td.grand-total-label-cell { white-space: nowrap !important; min-width: 5rem !important; width: auto !important; max-width: none !important; color: #0d6e2e !important; }
+        .pdf-bill-root .transport-table tr.pdf-grand-total-row td.grand-total-value-cell { color: #0d6e2e !important; }
       `
-      clone.insertBefore(pdfStyles, clone.firstChild)
+      root.appendChild(pdfStyles)
+
+      function escapeHtml(s) {
+        const div = document.createElement('div')
+        div.textContent = s
+        return div.innerHTML
+      }
+
+      const billDateDisplay = bill.bill_date ? bill.bill_date.replace(/-/g, '.') : '—'
+      const phones = [company.phone_1, company.phone_2].filter(Boolean).join(' / ')
+
+      chunks.forEach((chunk, pageIndex) => {
+        const pageDiv = document.createElement('div')
+        pageDiv.className = 'pdf-page'
+        if (pageIndex < chunks.length - 1) pageDiv.style.pageBreakAfter = 'always'
+
+        const companyBlock = document.createElement('div')
+        companyBlock.className = 'block company-block'
+        companyBlock.innerHTML = `<h2 class="company-name">${escapeHtml(company.company_name)}</h2><p class="company-address">${escapeHtml(company.address || '')}</p><p class="company-meta">${company.pan_number ? `<span>PAN:</span> ${escapeHtml(company.pan_number)}` : ''}${phones ? ` &nbsp; <span>Mobile:</span> ${escapeHtml(phones)}` : ''}</p>`
+        pageDiv.appendChild(companyBlock)
+
+        const billInfoWrap = document.createElement('div')
+        billInfoWrap.className = 'block bill-info-block'
+        billInfoWrap.innerHTML = `<div class="bill-info-row"><div class="bill-info-item"><span class="label">Bill No.</span><span class="value">${escapeHtml(bill.bill_number)}</span></div><div class="bill-info-item"><span class="label">Date</span><span class="value">${escapeHtml(billDateDisplay)}</span></div><div class="bill-info-item"><span class="label">M/s</span><span class="value">${escapeHtml(bill.client_name || '')}</span></div><div class="bill-info-item"><span class="label">Location</span><span class="value">${escapeHtml(bill.client_location || '')}</span></div></div>`
+        pageDiv.appendChild(billInfoWrap)
+
+        const tableBlock = document.createElement('div')
+        tableBlock.className = 'block table-block'
+        const tableScroll = document.createElement('div')
+        tableScroll.className = 'table-scroll'
+        const table = document.createElement('table')
+        table.className = 'transport-table'
+
+        const thead = document.createElement('thead')
+        const headerRow = document.createElement('tr')
+        pdfLayout.forEach((item) => {
+          const th = document.createElement('th')
+          if (item.type === 'fixed') {
+            th.textContent = FIXED_HEADERS[item.index - 1]
+            if (item.index === 1) th.className = 'col-sr-no'
+          } else if (item.type === 'custom') th.textContent = item.col.name
+          headerRow.appendChild(th)
+        })
+        thead.appendChild(headerRow)
+        table.appendChild(thead)
+
+        const tbody = document.createElement('tbody')
+        const startIndex = pageIndex * ROWS_PER_PAGE
+        chunk.forEach((row, idx) => {
+          const tr = document.createElement('tr')
+          const globalIndex = startIndex + idx
+          pdfLayout.forEach((item) => {
+            const td = document.createElement('td')
+            if (item.type === 'custom') {
+              td.textContent = row.custom?.[item.col.id] ?? '—'
+            } else {
+              const val = renderFixedCell(row, globalIndex, item.index)
+              td.textContent = val
+              td.className = [1, 6, 7, 8, 9].includes(item.index) ? 'num' : ''
+              if (item.index === 1) td.className += ' col-sr-no'
+            }
+            tr.appendChild(td)
+          })
+          tbody.appendChild(tr)
+        })
+
+        const pageTotal = chunk.reduce((sum, r) => sum + rowTotal(r), 0)
+        const totalRow = document.createElement('tr')
+        totalRow.className = 'pdf-page-total'
+        pdfLayout.forEach((item) => {
+          const td = document.createElement('td')
+          if (item.type === 'fixed' && item.index === 1) { td.textContent = 'Total'; td.className = 'col-sr-no' }
+          else if (item.type === 'fixed' && (item.index === 7 || item.index === 9)) { td.textContent = pageTotal.toLocaleString('en-IN'); td.className = 'num' }
+          else td.textContent = ''
+          totalRow.appendChild(td)
+        })
+        tbody.appendChild(totalRow)
+
+        const isLastPage = pageIndex === chunks.length - 1
+        if (isLastPage) {
+          const grandRow = document.createElement('tr')
+          grandRow.className = 'pdf-grand-total-row'
+          pdfLayout.forEach((item) => {
+            const td = document.createElement('td')
+            if (item.type === 'fixed' && item.index === 1) { td.textContent = 'Grand Total'; td.className = 'grand-total-label-cell' }
+            else if (item.type === 'fixed' && (item.index === 7 || item.index === 9)) { td.textContent = totalGrand.toLocaleString('en-IN'); td.className = 'num grand-total-value-cell' }
+            else td.textContent = ''
+            grandRow.appendChild(td)
+          })
+          tbody.appendChild(grandRow)
+        }
+
+        table.appendChild(tbody)
+        tableScroll.appendChild(table)
+        tableBlock.appendChild(tableScroll)
+        pageDiv.appendChild(tableBlock)
+        root.appendChild(pageDiv)
+      })
+
       const wrapper = document.createElement('div')
       wrapper.style.cssText = 'position:fixed;left:-9999px;top:0;width:1060px;box-sizing:border-box;'
-      wrapper.appendChild(clone)
+      wrapper.appendChild(root)
       document.body.appendChild(wrapper)
-      const filename = `bill-${bill?.bill_number ? bill.bill_number : 'bill'}.pdf`
+
+      const companyName = (company.company_name || '').replace(/[/\\:*?"<>|]/g, '').trim() || 'Bill'
+      const billNo = bill.bill_number || 'bill'
+      const filename = `${companyName} ${billNo}.pdf`
       html2pdf()
         .set({
-          margin: 8,
+          margin: 6,
           filename,
           image: { type: 'jpeg', quality: 0.98 },
-          html2canvas: { scale: 2, useCORS: true },
+          html2canvas: { scale: 1.65, useCORS: true },
           jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
         })
-        .from(clone)
+        .from(root)
         .save()
         .then(() => { wrapper.remove() })
         .catch(() => { wrapper.remove() })
     })
-  }, [bill])
+  }, [bill, company, customColumns])
 
   const handleRateRuleSave = useCallback(
     (e) => {

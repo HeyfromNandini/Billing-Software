@@ -2,11 +2,11 @@ import { useMemo } from 'react'
 import { formatDate, rowTotal, rowBalance } from '../utils/billing'
 import EditableEntryRow from './EditableEntryRow'
 
-const FIXED_HEADERS = ['Sr. no', 'Date', 'Vehicle No', 'Invoice no', 'From', 'To', 'Weight', 'Rate', 'Total', 'Advance', 'Balance']
+export const FIXED_HEADERS = ['Sr. no', 'Date', 'Vehicle No', 'Invoice no', 'Weight', 'Rate', 'Total', 'Advance', 'Balance']
 
-function buildColumnLayout(customColumns) {
+export function buildColumnLayout(customColumns) {
   const layout = []
-  for (let pos = 1; pos <= 11; pos++) {
+  for (let pos = 1; pos <= 9; pos++) {
     const customsAtPos = (customColumns || []).filter((c) => (Number(c.order) || 12) === pos)
     customsAtPos.forEach((col) => layout.push({ type: 'custom', col }))
     layout.push({ type: 'fixed', index: pos })
@@ -15,6 +15,10 @@ function buildColumnLayout(customColumns) {
   customsAt12.forEach((col) => layout.push({ type: 'custom', col }))
   layout.push({ type: 'action' })
   return layout
+}
+
+export function buildPdfColumnLayout(customColumns) {
+  return buildColumnLayout(customColumns).filter((item) => item.type !== 'action')
 }
 
 export default function TransportTable({
@@ -42,13 +46,11 @@ export default function TransportTable({
       case 2: return formatDate(row.date)
       case 3: return row.vehicle_number || '—'
       case 4: return row.invoice_number
-      case 5: return row.from || '—'
-      case 6: return row.to || '—'
-      case 7: return row.weight || '—'
-      case 8: return row.rate
-      case 9: return tot
-      case 10: return advanceStr
-      case 11: return bal
+      case 5: return row.weight || '—'
+      case 6: return row.rate
+      case 7: return tot
+      case 8: return advanceStr
+      case 9: return bal
       default: return '—'
     }
   }
@@ -62,7 +64,7 @@ export default function TransportTable({
               {layout.map((item, idx) => {
                 if (item.type === 'action') return <th key="action" className="no-print action-col">Action</th>
                 if (item.type === 'custom') return <th key={item.col.id}>{item.col.name}</th>
-                return <th key={`fixed-${item.index}`}>{FIXED_HEADERS[item.index - 1]}</th>
+                return <th key={`fixed-${item.index}`} className={item.index === 1 ? 'col-sr-no' : ''}>{FIXED_HEADERS[item.index - 1]}</th>
               })}
             </tr>
           </thead>
@@ -105,7 +107,8 @@ export default function TransportTable({
                     }
                     const val = renderFixedCell(row, index, item.index)
                     const isNum = [1, 7, 8, 9, 10, 11].includes(item.index)
-                    return <td key={`fixed-${item.index}`} className={isNum ? 'num' : ''}>{val}</td>
+                    const cn = [isNum && 'num', item.index === 1 && 'col-sr-no'].filter(Boolean).join(' ')
+                    return <td key={`fixed-${item.index}`} className={cn || undefined}>{val}</td>
                   })}
                 </tr>
               )

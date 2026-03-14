@@ -94,17 +94,15 @@ export default function EditableEntryRow({
 
   const renderFixedCell = (key) => {
     switch (key) {
-      case 1: return <td key="fixed-1" className="num">{index + 1}</td>
+      case 1: return <td key="fixed-1" className="num col-sr-no">{index + 1}</td>
       case 2: return <td key="fixed-2"><input type="date" name="date" value={form.date ?? ''} onChange={handleChange} required className="cell-input" aria-label="Date" /></td>
       case 3: return <td key="fixed-3"><input type="text" name="vehicle_number" value={form.vehicle_number ?? ''} onChange={handleChange} className="cell-input" placeholder="Vehicle No" aria-label="Vehicle No" /></td>
       case 4: return <td key="fixed-4"><input type="text" name="invoice_number" value={form.invoice_number ?? ''} onChange={handleChange} required className="cell-input" placeholder="Invoice no" aria-label="Invoice no" /></td>
-      case 5: return <td key="fixed-5"><input type="text" name="from" value={form.from ?? ''} onChange={handleChange} className="cell-input" placeholder="From" aria-label="From" /></td>
-      case 6: return <td key="fixed-6"><input type="text" name="to" value={form.to ?? ''} onChange={handleChange} className="cell-input" placeholder="To" aria-label="To" /></td>
-      case 7: return <td key="fixed-7" className="num"><input type="number" name="weight" min={0} step={1} value={form.weight === '' || form.weight == null ? '' : form.weight} onChange={handleChange} className="cell-input num" aria-label="Weight" /></td>
-      case 8: return <td key="fixed-8" className="num"><input type="number" name="rate" min={0} step={1} value={form.rate === '' || form.rate == null ? '' : form.rate} onChange={handleChange} required className="cell-input num" aria-label="Rate" /></td>
-      case 9: return <td key="fixed-9" className="num">{tot}</td>
-      case 10: return <td key="fixed-10" className="num"><input type="number" name="advance" min={0} step={1} value={form.advance === '' || form.advance == null ? '' : form.advance} onChange={handleChange} className="cell-input num" aria-label="Advance" /></td>
-      case 11: return <td key="fixed-11" className="num">{bal}</td>
+      case 5: return <td key="fixed-5" className="num"><input type="number" name="weight" min={0} step={1} value={form.weight === '' || form.weight == null ? '' : form.weight} onChange={handleChange} className="cell-input num" aria-label="Weight" /></td>
+      case 6: return <td key="fixed-6" className="num"><input type="number" name="rate" min={0} step={1} value={form.rate === '' || form.rate == null ? '' : form.rate} onChange={handleChange} required className="cell-input num" aria-label="Rate" /></td>
+      case 7: return <td key="fixed-7" className="num">{tot}</td>
+      case 8: return <td key="fixed-8" className="num"><input type="number" name="advance" min={0} step={1} value={form.advance === '' || form.advance == null ? '' : form.advance} onChange={handleChange} className="cell-input num" aria-label="Advance" /></td>
+      case 9: return <td key="fixed-9" className="num">{bal}</td>
       default: return <td key={`fixed-${key}`}>—</td>
     }
   }
@@ -116,8 +114,6 @@ export default function EditableEntryRow({
         <td><input type="date" name="date" value={form.date ?? ''} onChange={handleChange} required className="cell-input" /></td>
         <td><input type="text" name="vehicle_number" value={form.vehicle_number ?? ''} onChange={handleChange} className="cell-input" /></td>
         <td><input type="text" name="invoice_number" value={form.invoice_number ?? ''} onChange={handleChange} required className="cell-input" /></td>
-        <td><input type="text" name="from" value={form.from ?? ''} onChange={handleChange} className="cell-input" /></td>
-        <td><input type="text" name="to" value={form.to ?? ''} onChange={handleChange} className="cell-input" /></td>
         <td className="num"><input type="number" name="weight" min={0} step={1} value={form.weight === '' || form.weight == null ? '' : form.weight} onChange={handleChange} className="cell-input num" /></td>
         <td className="num"><input type="number" name="rate" min={0} step={1} value={form.rate === '' || form.rate == null ? '' : form.rate} onChange={handleChange} required className="cell-input num" /></td>
         <td className="num">{tot}</td>

@@ -1,4 +1,4 @@
-export default function BillInfoBlock({ billNumber = '146', billDate = '05.02.2026', clientName = 'Calcutta Carriers', clientLocation = 'Kalamboli', routeFrom = 'Kalamboli', routeTo = 'Khopoli' }) {
+export default function BillInfoBlock({ billNumber = '146', billDate = '05.02.2026', clientName = 'Calcutta Carriers', clientLocation = 'Kalamboli' }) {
   return (
     <div className="block bill-info-block">
       <div className="bill-info-row">
@@ -18,12 +18,6 @@ export default function BillInfoBlock({ billNumber = '146', billDate = '05.02.20
           <span className="label">Location</span>
           <span className="value">{clientLocation}</span>
         </div>
-      </div>
-      <div className="route-row">
-        <span className="label">From</span>
-        <span className="value">{routeFrom}</span>
-        <span className="label">To</span>
-        <span className="value">{routeTo}</span>
       </div>
     </div>
   )
