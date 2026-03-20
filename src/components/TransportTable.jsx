@@ -2,11 +2,23 @@ import { useMemo } from 'react'
 import { formatDate, rowTotal, rowBalance } from '../utils/billing'
 import EditableEntryRow from './EditableEntryRow'
 
-export const FIXED_HEADERS = ['Sr. no', 'Date', 'Vehicle No', 'Invoice no', 'Weight', 'Rate', 'Total', 'Advance', 'Balance']
+export const FIXED_HEADERS = [
+  'Sr. no',
+  'Date',
+  'Vehicle No',
+  'Invoice no',
+  'From',
+  'To',
+  'Weight',
+  'Rate',
+  'Total',
+  'Advance',
+  'Balance',
+]
 
 export function buildColumnLayout(customColumns) {
   const layout = []
-  for (let pos = 1; pos <= 9; pos++) {
+  for (let pos = 1; pos <= 11; pos++) {
     const customsAtPos = (customColumns || []).filter((c) => (Number(c.order) || 12) === pos)
     customsAtPos.forEach((col) => layout.push({ type: 'custom', col }))
     layout.push({ type: 'fixed', index: pos })
@@ -46,11 +58,13 @@ export default function TransportTable({
       case 2: return formatDate(row.date)
       case 3: return row.vehicle_number || '—'
       case 4: return row.invoice_number
-      case 5: return row.weight || '—'
-      case 6: return row.rate
-      case 7: return tot
-      case 8: return advanceStr
-      case 9: return bal
+      case 5: return row.from || '—'
+      case 6: return row.to || '—'
+      case 7: return row.weight || '—'
+      case 8: return row.rate
+      case 9: return tot
+      case 10: return advanceStr
+      case 11: return bal
       default: return '—'
     }
   }

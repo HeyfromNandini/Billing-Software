@@ -1,66 +1,77 @@
-import { createContext, useContext, useState, useCallback, useEffect } from 'react'
-import { MY_COMPANIES, DEFAULT_CLIENTS, DEFAULT_BILL, STORAGE_KEY } from '../data/seedData'
+import { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react'
+import {
+  loadAppStateFromLocalStorage,
+  saveAppStateToLocalStorage,
+  mergeLocalClientsAndBillsIfFirestoreEmpty,
+} from '../data/appStateLocal'
+import { mergeCompaniesWithDefaults } from '../data/seedData'
+import { isFirebaseConfigured } from '../firebase/config'
+import { subscribeAppData, saveAppDataToFirestore } from '../firebase/appData'
 
 const AppContext = createContext(null)
-
-function loadStored() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      const data = JSON.parse(raw)
-      if (
-        Array.isArray(data.companies) &&
-        Array.isArray(data.clients) &&
-        Array.isArray(data.bills) &&
-        data.companies.length >= 3
-      ) {
-        const companies = data.companies.map((c) => ({ ...c }))
-        const clients = (Array.isArray(data.clients) ? data.clients : []).map((c) => ({
-          ...c,
-          custom_columns: (Array.isArray(c.custom_columns) ? c.custom_columns : []).map((col, i) => ({
-            ...col,
-            order: typeof col.order === 'number' ? col.order : i + 1,
-          })),
-        }))
-        return {
-          companies,
-          clients,
-          bills: data.bills,
-        }
-      }
-    }
-  } catch (_) {}
-  return {
-    companies: MY_COMPANIES,
-    clients: DEFAULT_CLIENTS,
-    bills: [DEFAULT_BILL],
-  }
-}
-
-function saveStored(companies, clients, bills) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ companies, clients, bills }))
-  } catch (_) {}
-}
 
 export function AppProvider({ children }) {
   const [companies, setCompanies] = useState([])
   const [clients, setClients] = useState([])
   const [bills, setBills] = useState([])
   const [hydrated, setHydrated] = useState(false)
+  const skipSaveFromRemote = useRef(false)
+  const latestRef = useRef({ companies: [], clients: [], bills: [] })
+  latestRef.current = { companies, clients, bills }
 
   useEffect(() => {
-    const data = loadStored()
-    setCompanies(data.companies)
-    setClients(data.clients)
-    setBills(data.bills)
-    setHydrated(true)
+    if (!isFirebaseConfigured()) {
+      const data = loadAppStateFromLocalStorage()
+      setCompanies(mergeCompaniesWithDefaults(data.companies))
+      setClients(data.clients)
+      setBills(data.bills)
+      setHydrated(true)
+      return
+    }
+    const unsub = subscribeAppData(
+      (data) => {
+        const recovered = mergeLocalClientsAndBillsIfFirestoreEmpty(data)
+        const mergedCompanies = mergeCompaniesWithDefaults(recovered.companies)
+        const mergedDiffers =
+          JSON.stringify(mergedCompanies) !== JSON.stringify(data.companies ?? []) ||
+          JSON.stringify(recovered.clients ?? []) !== JSON.stringify(data.clients ?? []) ||
+          JSON.stringify(recovered.bills ?? []) !== JSON.stringify(data.bills ?? [])
+        // If we merged defaults or restored localStorage clients/bills, persist to Firestore.
+        skipSaveFromRemote.current = !mergedDiffers
+        setCompanies(mergedCompanies)
+        setClients(Array.isArray(recovered.clients) ? recovered.clients : [])
+        setBills(Array.isArray(recovered.bills) ? recovered.bills : [])
+        setHydrated(true)
+      },
+      (err) => console.error('[Firestore]', err),
+      () => loadAppStateFromLocalStorage()
+    )
+    return () => unsub()
   }, [])
 
   useEffect(() => {
     if (!hydrated) return
-    saveStored(companies, clients, bills)
+    if (!isFirebaseConfigured()) {
+      saveAppStateToLocalStorage(companies, clients, bills)
+      return
+    }
+    if (skipSaveFromRemote.current) {
+      skipSaveFromRemote.current = false
+      return
+    }
+    const t = setTimeout(() => {
+      saveAppDataToFirestore({ companies, clients, bills }).catch((e) => console.error('[Firestore save]', e))
+    }, 450)
+    return () => clearTimeout(t)
   }, [hydrated, companies, clients, bills])
+
+  useEffect(() => {
+    return () => {
+      if (!isFirebaseConfigured()) return
+      const s = latestRef.current
+      saveAppDataToFirestore(s).catch(() => {})
+    }
+  }, [])
 
   const getCompany = useCallback(
     (id) => companies.find((c) => c.id === id),
@@ -76,6 +87,12 @@ export function AppProvider({ children }) {
     (id) => clients.find((c) => c.id === id),
     [clients]
   )
+
+  const addCompany = useCallback((company) => {
+    const id = `company-${Date.now()}`
+    setCompanies((prev) => [...prev, { ...company, id }])
+    return id
+  }, [])
 
   const addClient = useCallback((companyId, client) => {
     const id = `client-${Date.now()}`
@@ -168,14 +185,22 @@ export function AppProvider({ children }) {
     )
   }, [])
 
+  const deleteCompany = useCallback((id) => {
+    setCompanies((prev) => prev.filter((c) => c.id !== id))
+    setClients((prev) => prev.filter((c) => c.company_id !== id))
+    setBills((prev) => prev.filter((b) => b.company_id !== id))
+  }, [])
+
   const value = {
     companies,
     clients,
     bills,
     hydrated,
+    useCloudStorage: isFirebaseConfigured(),
     getCompany,
     getClientsByCompany,
     getClient,
+    addCompany,
     addClient,
     updateClient,
     deleteClient,
@@ -186,6 +211,7 @@ export function AppProvider({ children }) {
     deleteBill,
     getBill,
     updateCompany,
+    deleteCompany,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

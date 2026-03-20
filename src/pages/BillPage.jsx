@@ -236,11 +236,13 @@ export default function BillPage() {
           case 2: return formatDate(row.date)
           case 3: return row.vehicle_number || '—'
           case 4: return row.invoice_number ?? '—'
-          case 5: return row.weight ?? '—'
-          case 6: return row.rate ?? '—'
-          case 7: return tot
-          case 8: return advanceStr
-          case 9: return bal
+          case 5: return row.from || '—'
+          case 6: return row.to || '—'
+          case 7: return row.weight ?? '—'
+          case 8: return row.rate ?? '—'
+          case 9: return tot
+          case 10: return advanceStr
+          case 11: return bal
           default: return '—'
         }
       }
@@ -250,16 +252,19 @@ export default function BillPage() {
       const pdfStyles = document.createElement('style')
       pdfStyles.textContent = `
         .pdf-bill-root { width: 100%; box-sizing: border-box; }
-        .pdf-page { page-break-after: always; }
+        .pdf-page { page-break-after: always; padding: 2mm 4mm 2mm 4mm; box-sizing: border-box; }
         .pdf-page:last-child { page-break-after: auto; }
-        .pdf-bill-root .company-block { padding: 0.35rem 0 0.2rem 0 !important; margin-bottom: 0.2rem !important; border-bottom: none !important; }
-        .pdf-bill-root .company-block .company-name { margin: 0 0 0.15em !important; font-size: 2.65rem !important; font-weight: 900 !important; color: #b91c1c !important; }
-        .pdf-bill-root .company-block .company-address { margin: 0 0 0.2em !important; font-size: 1.25rem !important; line-height: 1.3 !important; }
-        .pdf-bill-root .company-block .company-meta { margin: 0 !important; font-size: 1.2rem !important; }
+        .pdf-bill-root .company-block { padding: 0.25rem 0 0.15rem 0 !important; margin-bottom: 0.15rem !important; border-bottom: none !important; text-align: center !important; }
+        .pdf-bill-root .company-block .company-name { margin: 0 0 0.1em !important; font-size: 2.6rem !important; font-weight: 900 !important; color: #b91c1c !important; }
+        .pdf-bill-root .company-block .company-address { margin: 0 0 0.2em !important; font-size: 0.95rem !important; line-height: 1.3 !important; }
+        .pdf-bill-root .company-block .company-meta { margin: 0 !important; font-size: 0.9rem !important; }
         .pdf-bill-root .bill-info-block { padding: 0.2rem 0 0.35rem 0 !important; margin-bottom: 0 !important; border-bottom: none !important; gap: 0.25rem !important; }
         .pdf-bill-root .bill-info-block .bill-info-row { gap: 0.35rem 1rem !important; }
         .pdf-bill-root .bill-info-block .bill-info-item .label { font-size: 0.6rem !important; }
         .pdf-bill-root .bill-info-block .bill-info-item .value { font-size: 0.85rem !important; }
+        .pdf-bill-root .bill-info-block .route-row { display: flex !important; flex-wrap: wrap !important; align-items: center !important; gap: 0.35rem 1rem !important; margin-top: 0.15rem !important; font-size: 0.85rem !important; }
+        .pdf-bill-root .bill-info-block .route-row .label { font-size: 0.6rem !important; }
+        .pdf-bill-root .bill-info-block .route-row .value { font-size: 0.85rem !important; }
         .pdf-bill-root .table-scroll { overflow: visible !important; width: 100% !important; margin: 0 !important; }
         .pdf-bill-root .transport-table { width: 100% !important; table-layout: fixed !important; font-size: 11px !important; border-collapse: collapse; }
         .pdf-bill-root .transport-table th, .pdf-bill-root .transport-table td { padding: 5px 6px !important; box-sizing: border-box; border-bottom: 1px solid #ccc; text-align: center !important; }
@@ -270,6 +275,8 @@ export default function BillPage() {
         .pdf-bill-root .transport-table tr.pdf-grand-total-row td { font-weight: 700; border-top: 2px solid #111; padding-top: 8px !important; font-size: 0.95rem !important; }
         .pdf-bill-root .transport-table tr.pdf-grand-total-row td.grand-total-label-cell { white-space: nowrap !important; min-width: 5rem !important; width: auto !important; max-width: none !important; color: #0d6e2e !important; }
         .pdf-bill-root .transport-table tr.pdf-grand-total-row td.grand-total-value-cell { color: #0d6e2e !important; }
+        .pdf-bill-root .pdf-sign-stamp-block { margin-top: 2.5rem !important; text-align: right !important; padding-right: 0.5rem !important; }
+        .pdf-bill-root .pdf-sign-stamp-inner { display: inline-block; font-size: 0.75rem !important; color: #666 !important; border: 1px solid #ccc !important; padding: 0.5rem 1.5rem !important; min-width: 8rem !important; text-align: center !important; }
       `
       root.appendChild(pdfStyles)
 
@@ -294,7 +301,9 @@ export default function BillPage() {
 
         const billInfoWrap = document.createElement('div')
         billInfoWrap.className = 'block bill-info-block'
-        billInfoWrap.innerHTML = `<div class="bill-info-row"><div class="bill-info-item"><span class="label">Bill No.</span><span class="value">${escapeHtml(bill.bill_number)}</span></div><div class="bill-info-item"><span class="label">Date</span><span class="value">${escapeHtml(billDateDisplay)}</span></div><div class="bill-info-item"><span class="label">M/s</span><span class="value">${escapeHtml(bill.client_name || '')}</span></div><div class="bill-info-item"><span class="label">Location</span><span class="value">${escapeHtml(bill.client_location || '')}</span></div></div>`
+        const routeFromPdf = (bill.route_from || '').trim() || '—'
+        const routeToPdf = (bill.route_to || '').trim() || '—'
+        billInfoWrap.innerHTML = `<div class="bill-info-row"><div class="bill-info-item"><span class="label">Bill No.</span><span class="value">${escapeHtml(bill.bill_number)}</span></div><div class="bill-info-item"><span class="label">M/s</span><span class="value">${escapeHtml(bill.client_name || '')}</span></div><div class="bill-info-item"><span class="label">Location</span><span class="value">${escapeHtml(bill.client_location || '')}</span></div><div class="bill-info-item"><span class="label">Date</span><span class="value">${escapeHtml(billDateDisplay)}</span></div></div><div class="route-row"><span class="label">From</span><span class="value">${escapeHtml(routeFromPdf)}</span><span class="label">To</span><span class="value">${escapeHtml(routeToPdf)}</span></div>`
         pageDiv.appendChild(billInfoWrap)
 
         const tableBlock = document.createElement('div')
@@ -329,7 +338,7 @@ export default function BillPage() {
             } else {
               const val = renderFixedCell(row, globalIndex, item.index)
               td.textContent = val
-              td.className = [1, 6, 7, 8, 9].includes(item.index) ? 'num' : ''
+              td.className = [1, 7, 8, 9, 10, 11].includes(item.index) ? 'num' : ''
               if (item.index === 1) td.className += ' col-sr-no'
             }
             tr.appendChild(td)
@@ -343,7 +352,7 @@ export default function BillPage() {
         pdfLayout.forEach((item) => {
           const td = document.createElement('td')
           if (item.type === 'fixed' && item.index === 1) { td.textContent = 'Total'; td.className = 'col-sr-no' }
-          else if (item.type === 'fixed' && (item.index === 7 || item.index === 9)) { td.textContent = pageTotal.toLocaleString('en-IN'); td.className = 'num' }
+          else if (item.type === 'fixed' && (item.index === 9 || item.index === 11)) { td.textContent = pageTotal.toLocaleString('en-IN'); td.className = 'num' }
           else td.textContent = ''
           totalRow.appendChild(td)
         })
@@ -356,7 +365,7 @@ export default function BillPage() {
           pdfLayout.forEach((item) => {
             const td = document.createElement('td')
             if (item.type === 'fixed' && item.index === 1) { td.textContent = 'Grand Total'; td.className = 'grand-total-label-cell' }
-            else if (item.type === 'fixed' && (item.index === 7 || item.index === 9)) { td.textContent = totalGrand.toLocaleString('en-IN'); td.className = 'num grand-total-value-cell' }
+            else if (item.type === 'fixed' && (item.index === 9 || item.index === 11)) { td.textContent = totalGrand.toLocaleString('en-IN'); td.className = 'num grand-total-value-cell' }
             else td.textContent = ''
             grandRow.appendChild(td)
           })
@@ -367,6 +376,14 @@ export default function BillPage() {
         tableScroll.appendChild(table)
         tableBlock.appendChild(tableScroll)
         pageDiv.appendChild(tableBlock)
+
+        if (isLastPage) {
+          const signStampBlock = document.createElement('div')
+          signStampBlock.className = 'pdf-sign-stamp-block'
+          signStampBlock.innerHTML = '<div class="pdf-sign-stamp-inner">Sign & Stamp</div>'
+          pageDiv.appendChild(signStampBlock)
+        }
+
         root.appendChild(pageDiv)
       })
 
@@ -380,7 +397,7 @@ export default function BillPage() {
       const filename = `${companyName} ${billNo}.pdf`
       html2pdf()
         .set({
-          margin: 6,
+          margin: 3,
           filename,
           image: { type: 'jpeg', quality: 0.98 },
           html2canvas: { scale: 1.65, useCORS: true },
@@ -449,16 +466,16 @@ export default function BillPage() {
                         <input type="text" name="bill_number" value={billEditForm.bill_number} onChange={handleBillEditChange} required />
                       </label>
                       <label>
-                        <span>Date</span>
-                        <input type="date" name="bill_date" value={billEditForm.bill_date} onChange={handleBillEditChange} required />
-                      </label>
-                      <label>
                         <span>M/s</span>
                         <input type="text" name="client_name" value={billEditForm.client_name} onChange={handleBillEditChange} placeholder="Client name" />
                       </label>
                       <label>
                         <span>Location</span>
                         <input type="text" name="client_location" value={billEditForm.client_location} onChange={handleBillEditChange} placeholder="Location" />
+                      </label>
+                      <label>
+                        <span>Date</span>
+                        <input type="date" name="bill_date" value={billEditForm.bill_date} onChange={handleBillEditChange} required />
                       </label>
                       <label>
                         <span>From</span>
@@ -509,6 +526,9 @@ export default function BillPage() {
                 onAddEntry={openAdd}
                 onExportPdf={handleExportPdf}
               />
+              <div className="sign-stamp-block">
+                <div className="sign-stamp-inner">Sign & Stamp</div>
+              </div>
             </div>
           </section>
 

@@ -230,6 +230,7 @@ body {
 .company-block {
   padding-top: 1.25rem;
   padding-bottom: 1.25rem;
+  text-align: center;
 }
 .company-name {
   margin: 0 0 0.35em;
@@ -246,13 +247,13 @@ body {
 }
 .company-address {
   margin: 0 0 0.5em;
-  font-size: 1rem;
+  font-size: 0.8rem;
   color: var(--text-muted);
   line-height: 1.45;
 }
 .company-meta {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 0.8rem;
   color: var(--text-muted);
   font-family: var(--font-mono);
 }
@@ -542,6 +543,22 @@ body {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+/* Sign & Stamp – bottom right */
+.sign-stamp-block {
+  margin-top: 2.5rem;
+  text-align: right;
+  padding: 0 0.25rem 0 0;
+}
+.sign-stamp-inner {
+  display: inline-block;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  padding: 0.5rem 1.5rem;
+  min-width: 8rem;
+  text-align: center;
 }
 
 /* Buttons */
@@ -1440,5 +1457,12 @@ body {
   .totals-block {
     page-break-before: avoid;
     break-before: avoid;
+  }
+  .sign-stamp-block {
+    page-break-inside: avoid;
+  }
+  .sign-stamp-inner {
+    border-color: #999;
+    color: #333;
   }
 }

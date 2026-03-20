@@ -15,6 +15,19 @@ export const MY_COMPANIES = [
   },
 ]
 
+/** Ensures the three navbar companies (aadarsh, deva, sangita) exist; merges stored fields over defaults. */
+export function mergeCompaniesWithDefaults(companies) {
+  const incoming = Array.isArray(companies) ? companies.filter((c) => c && c.id) : []
+  const defaultIds = new Set(MY_COMPANIES.map((c) => c.id))
+  const byId = new Map(incoming.map((c) => [c.id, c]))
+  const ordered = MY_COMPANIES.map((d) => {
+    const existing = byId.get(d.id)
+    return existing ? { ...d, ...existing } : { ...d }
+  })
+  const extras = incoming.filter((c) => !defaultIds.has(c.id))
+  return [...ordered, ...extras]
+}
+
 /** Default rate rule per bill: variable with base 27.273 ton → ₹7500; above that, full weight × ₹275/ton. */
 const DEFAULT_BILL_RATE_RULE = {
   rate_type: 'variable',

@@ -167,6 +167,7 @@ body {
 .company-block {
   padding-top: 1.25rem;
   padding-bottom: 1.25rem;
+  text-align: center;
 }
 .company-name {
   margin: 0 0 0.35em;
@@ -181,13 +182,13 @@ body {
 }
 .company-address {
   margin: 0 0 0.5em;
-  font-size: 0.85rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
   line-height: 1.45;
 }
 .company-meta {
   margin: 0;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
   font-family: var(--font-mono);
 }
