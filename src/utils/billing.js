@@ -22,12 +22,76 @@ export function rowBalance(row) {
   return (row.rate ?? 0) - (row.advance ?? 0)
 }
 
-export function formatDate(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${day}.${m}`
+/**
+ * Parse trip date from DB / Sheets / imports into a local Date (noon), or null.
+ * Supports yyyy-mm-dd, dd.mm.yyyy, dd.mm.yy, dd/mm/yyyy, dd.mm (year = current).
+ */
+export function parseBillDate(raw) {
+  if (raw == null || raw === '') return null
+  const s = String(raw).trim()
+  if (!s) return null
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, mo, d] = s.split('-').map((x) => parseInt(x, 10))
+    if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return null
+    const dt = new Date(y, mo - 1, d, 12, 0, 0, 0)
+    if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null
+    return dt
+  }
+
+  const m = s.match(/^(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?$/)
+  if (m) {
+    const d = parseInt(m[1], 10)
+    const mo = parseInt(m[2], 10)
+    let y =
+      m[3] != null && String(m[3]).trim() !== ''
+        ? parseInt(m[3], 10)
+        : new Date().getFullYear()
+    if (y < 100) y += 2000
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return null
+    const dt = new Date(y, mo - 1, d, 12, 0, 0, 0)
+    if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null
+    return dt
+  }
+
+  const t = Date.parse(s)
+  if (!Number.isFinite(t)) return null
+  const dt = new Date(t)
+  if (Number.isNaN(dt.getTime())) return null
+  return dt
+}
+
+/** Display trip date as DD.MM (day.month, no year in the table). */
+export function formatDate(raw) {
+  const dt = parseBillDate(raw)
+  if (!dt) return '—'
+  const day = String(dt.getDate()).padStart(2, '0')
+  const month = String(dt.getMonth() + 1).padStart(2, '0')
+  return `${day}.${month}`
+}
+
+/** Distinct non-empty “To” values from trip rows, in first-seen order. */
+export function uniqueEntryDestinations(entries) {
+  const seen = new Set()
+  const out = []
+  for (const e of entries || []) {
+    const t = String(e?.to ?? '').trim()
+    if (!t || seen.has(t)) continue
+    seen.add(t)
+    out.push(t)
+  }
+  return out
+}
+
+/**
+ * Bill header / PDF “To”: all trip destinations joined with “, ” when rows have To;
+ * otherwise falls back to bill.route_to.
+ */
+export function displayBillHeaderRouteTo(bill) {
+  const uniq = uniqueEntryDestinations(bill?.entries)
+  if (uniq.length > 0) return uniq.join(', ')
+  const fb = String(bill?.route_to ?? '').trim()
+  return fb || '—'
 }
 
 export function grandTotal(entries) {

@@ -32,7 +32,7 @@ export default function BillInfoBlock({
         <span className="label">From</span>
         <span className="value">{fromDisplay}</span>
         <span className="label">To</span>
-        <span className="value">{toDisplay}</span>
+        <span className="value route-to-value">{toDisplay}</span>
       </div>
     </div>
   )

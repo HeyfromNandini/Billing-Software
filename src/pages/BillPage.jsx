@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
 import Header from '../components/Header'
@@ -9,7 +9,15 @@ import TotalsBlock from '../components/TotalsBlock'
 import EntryModal from '../components/EntryModal'
 import VehicleCombobox from '../components/VehicleCombobox'
 import { COMMON_TO_DESTINATIONS } from '../data/routeDestinations'
-import { grandTotal, formatDate, rowTotal, rowBalance, reorderEntriesByIndex } from '../utils/billing'
+import {
+  grandTotal,
+  formatDate,
+  rowTotal,
+  rowBalance,
+  reorderEntriesByIndex,
+  parseBillDate,
+  displayBillHeaderRouteTo,
+} from '../utils/billing'
 import { isDriveLayoutConfigured, companySpreadsheetId } from '../sheets/config'
 import { getSpreadsheetMeta, readBillSheet } from '../sheets/driveLayout'
 import {
@@ -22,6 +30,78 @@ import { flushBillToDriveNow, queueBillDriveSyncWithBill } from '../sheets/billD
 const ROWS_PER_PAGE = 15
 
 let nextEntryId = 1000
+
+function normalizeVehicleToken(s) {
+  return String(s ?? '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** Comma, semicolon, or newline — show row if vehicle matches any token (substring, case-insensitive). */
+function parseVehicleFilterTokens(filterRaw) {
+  return String(filterRaw ?? '')
+    .split(/[,;\n]+/)
+    .map((t) => normalizeVehicleToken(t))
+    .filter(Boolean)
+}
+
+function entryMatchesVehicleFilter(entry, filterRaw) {
+  const tokens = parseVehicleFilterTokens(filterRaw)
+  if (tokens.length === 0) return true
+  const v = normalizeVehicleToken(entry.vehicle_number)
+  return tokens.some((q) => v.includes(q))
+}
+
+function filterBillEntriesByVehicle(entries, vehicleFilter) {
+  return entries.filter((e) => entryMatchesVehicleFilter(e, vehicleFilter))
+}
+
+/** Sort by trip date; rows without a parseable date go last. */
+function compareEntriesByTripDate(a, b, direction) {
+  const da = parseBillDate(a?.date)
+  const db = parseBillDate(b?.date)
+  const ta = da ? da.getTime() : null
+  const tb = db ? db.getTime() : null
+  if (ta == null && tb == null) return 0
+  if (ta == null) return 1
+  if (tb == null) return -1
+  const cmp = ta - tb
+  return direction === 'desc' ? -cmp : cmp
+}
+
+function compareEntriesByInvoice(a, b, direction) {
+  const sa = String(a?.invoice_number ?? '').trim()
+  const sb = String(b?.invoice_number ?? '').trim()
+  if (sa === '' && sb === '') return 0
+  if (sa === '') return 1
+  if (sb === '') return -1
+  const na = parseInt(sa, 10)
+  const nb = parseInt(sb, 10)
+  const aNum = Number.isFinite(na) && String(na) === sa
+  const bNum = Number.isFinite(nb) && String(nb) === sb
+  let cmp
+  if (aNum && bNum) cmp = na - nb
+  else cmp = sa.localeCompare(sb, undefined, { numeric: true, sensitivity: 'base' })
+  return direction === 'desc' ? -cmp : cmp
+}
+
+/** When both date and invoice sorts are on, date is primary and invoice breaks ties. */
+function compareEntriesForBillTable(a, b, dateSort, invoiceSort) {
+  if (dateSort === 'asc' || dateSort === 'desc') {
+    const c = compareEntriesByTripDate(a, b, dateSort)
+    if (c !== 0) return c
+  }
+  if (invoiceSort === 'asc' || invoiceSort === 'desc') {
+    return compareEntriesByInvoice(a, b, invoiceSort)
+  }
+  return 0
+}
+
+function applyTableSorts(entries, dateSort, invoiceSort) {
+  if (dateSort === 'none' && invoiceSort === 'none') return entries
+  return [...entries].sort((a, b) => compareEntriesForBillTable(a, b, dateSort, invoiceSort))
+}
 
 const defaultRateRule = {
   rate_type: 'variable',
@@ -58,6 +138,9 @@ export default function BillPage() {
   const [editingColumnName, setEditingColumnName] = useState('')
   const [editingColumnOrder, setEditingColumnOrder] = useState('')
   const [sheetConflict, setSheetConflict] = useState(null)
+  const [vehicleFilter, setVehicleFilter] = useState('')
+  const [dateSort, setDateSort] = useState('none')
+  const [invoiceSort, setInvoiceSort] = useState('none')
   const lastLocalEditRef = useRef(0)
   const billRef = useRef(null)
   const clientRef = useRef(null)
@@ -68,7 +151,27 @@ export default function BillPage() {
   const rawCustomColumns = client?.custom_columns ?? []
   const customColumns = [...rawCustomColumns].map((c) => ({ ...c, order: Math.max(1, Math.min(Number(c.order) || 12, 12)) }))
   const entries = bill?.entries ?? []
-  const totalAmount = grandTotal(entries)
+  const vehicleFilterActive = vehicleFilter.trim().length > 0
+  const dateSortActive = dateSort !== 'none'
+  const invoiceSortActive = invoiceSort !== 'none'
+  const tableFiltersActive = vehicleFilterActive || dateSortActive || invoiceSortActive
+  const vehicleFilteredEntries = useMemo(
+    () => filterBillEntriesByVehicle(entries, vehicleFilter),
+    [entries, vehicleFilter]
+  )
+  const filteredEntries = useMemo(
+    () => applyTableSorts(vehicleFilteredEntries, dateSort, invoiceSort),
+    [vehicleFilteredEntries, dateSort, invoiceSort]
+  )
+  const vehicleDatalistOptions = useMemo(() => {
+    const set = new Set()
+    for (const e of entries) {
+      const v = String(e.vehicle_number ?? '').trim()
+      if (v) set.add(v)
+    }
+    return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+  }, [entries])
+  const totalAmount = grandTotal(filteredEntries)
 
   billRef.current = bill
   clientRef.current = client
@@ -87,6 +190,9 @@ export default function BillPage() {
 
   useEffect(() => {
     setSheetConflict(null)
+    setVehicleFilter('')
+    setDateSort('none')
+    setInvoiceSort('none')
   }, [billId])
 
   useEffect(() => {
@@ -331,7 +437,9 @@ export default function BillPage() {
     if (!company || !bill) return
     import('html2pdf.js').then(({ default: html2pdf }) => {
       const pdfLayout = buildPdfColumnLayout(customColumns)
-      const entriesList = bill.entries ?? []
+      const all = bill.entries ?? []
+      const base = filterBillEntriesByVehicle(all, vehicleFilter)
+      const entriesList = applyTableSorts(base, dateSort, invoiceSort)
       const chunks = []
       for (let i = 0; i < entriesList.length; i += ROWS_PER_PAGE) {
         chunks.push(entriesList.slice(i, i + ROWS_PER_PAGE))
@@ -414,7 +522,7 @@ export default function BillPage() {
         const billInfoWrap = document.createElement('div')
         billInfoWrap.className = 'block bill-info-block'
         const routeFromPdf = (bill.route_from || '').trim() || '—'
-        const routeToPdf = (bill.route_to || '').trim() || '—'
+        const routeToPdf = displayBillHeaderRouteTo(bill)
         billInfoWrap.innerHTML = `<div class="bill-info-row"><div class="bill-info-item"><span class="label">Bill No.</span><span class="value">${escapeHtml(bill.bill_number)}</span></div><div class="bill-info-item"><span class="label">M/s</span><span class="value">${escapeHtml(bill.client_name || '')}</span></div><div class="bill-info-item"><span class="label">Location</span><span class="value">${escapeHtml(bill.client_location || '')}</span></div><div class="bill-info-item"><span class="label">Date</span><span class="value">${escapeHtml(billDateDisplay)}</span></div></div><div class="route-row"><span class="label">From</span><span class="value">${escapeHtml(routeFromPdf)}</span><span class="label">To</span><span class="value">${escapeHtml(routeToPdf)}</span></div>`
         pageDiv.appendChild(billInfoWrap)
 
@@ -520,7 +628,7 @@ export default function BillPage() {
         .then(() => { wrapper.remove() })
         .catch(() => { wrapper.remove() })
     })
-  }, [bill, company, customColumns])
+  }, [bill, company, customColumns, vehicleFilter, dateSort, invoiceSort])
 
   const handleRateRuleSave = useCallback(
     (e) => {
@@ -667,7 +775,7 @@ export default function BillPage() {
                       clientName={bill.client_name}
                       clientLocation={bill.client_location}
                       routeFrom={bill.route_from}
-                      routeTo={bill.route_to}
+                      routeTo={displayBillHeaderRouteTo(bill)}
                     />
                     <button type="button" className="btn btn-secondary btn-edit-bill no-print" onClick={startBillInfoEdit}>
                       Edit bill
@@ -675,15 +783,128 @@ export default function BillPage() {
                   </>
                 )}
               </div>
+              <div className="bill-table-filters no-print">
+                <div className="bill-filter-row">
+                  <label className="bill-filter-label" htmlFor={`bill-vehicle-filter-${billId}`}>
+                    Vehicle
+                  </label>
+                  <input
+                    id={`bill-vehicle-filter-${billId}`}
+                    className="bill-filter-input bill-filter-input-vehicle"
+                    type="text"
+                    list={`vehicle-filter-dl-${billId}`}
+                    value={vehicleFilter}
+                    onChange={(e) => setVehicleFilter(e.target.value)}
+                    placeholder="e.g. MH46, NL01AD — comma / ; / line"
+                    title="Multiple vehicles: separate with comma, semicolon, or new line. Matches any."
+                    autoComplete="off"
+                  />
+                  <datalist id={`vehicle-filter-dl-${billId}`}>
+                    {vehicleDatalistOptions.map((v) => (
+                      <option key={v} value={v} />
+                    ))}
+                  </datalist>
+                  {vehicleFilterActive ? (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm bill-filter-clear"
+                      onClick={() => setVehicleFilter('')}
+                    >
+                      Clear vehicle
+                    </button>
+                  ) : null}
+                </div>
+                <div className="bill-filter-row bill-filter-row-date-sort">
+                  <label className="bill-filter-label" htmlFor={`bill-date-sort-${billId}`}>
+                    Date order
+                  </label>
+                  <select
+                    id={`bill-date-sort-${billId}`}
+                    className="bill-filter-input bill-filter-select"
+                    value={dateSort}
+                    onChange={(e) => setDateSort(e.target.value)}
+                  >
+                    <option value="none">Bill order (default)</option>
+                    <option value="asc">Oldest first (ascending)</option>
+                    <option value="desc">Newest first (descending)</option>
+                  </select>
+                  {dateSortActive ? (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm bill-filter-clear"
+                      onClick={() => setDateSort('none')}
+                    >
+                      Reset date order
+                    </button>
+                  ) : null}
+                </div>
+                <div className="bill-filter-row bill-filter-row-invoice-sort">
+                  <label className="bill-filter-label" htmlFor={`bill-invoice-sort-${billId}`}>
+                    Invoice no
+                  </label>
+                  <select
+                    id={`bill-invoice-sort-${billId}`}
+                    className="bill-filter-input bill-filter-select"
+                    value={invoiceSort}
+                    onChange={(e) => setInvoiceSort(e.target.value)}
+                  >
+                    <option value="none">Bill order (default)</option>
+                    <option value="asc">Ascending (low → high)</option>
+                    <option value="desc">Descending (high → low)</option>
+                  </select>
+                  {invoiceSortActive ? (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm bill-filter-clear"
+                      onClick={() => setInvoiceSort('none')}
+                    >
+                      Reset invoice order
+                    </button>
+                  ) : null}
+                </div>
+                {tableFiltersActive ? (
+                  <div className="bill-filter-row bill-filter-row-summary">
+                    <span className="bill-filter-summary text-muted">
+                      {[
+                        vehicleFilterActive
+                          ? `Showing ${vehicleFilteredEntries.length} of ${entries.length} trip${entries.length === 1 ? '' : 's'}`
+                          : null,
+                        dateSort === 'asc' ? 'Date: oldest → newest' : null,
+                        dateSort === 'desc' ? 'Date: newest → oldest' : null,
+                        invoiceSort === 'asc' ? 'Invoice: low → high' : null,
+                        invoiceSort === 'desc' ? 'Invoice: high → low' : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm bill-filter-clear-all"
+                      onClick={() => {
+                        setVehicleFilter('')
+                        setDateSort('none')
+                        setInvoiceSort('none')
+                      }}
+                    >
+                      Clear all filters
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+              {vehicleFilterActive && vehicleFilteredEntries.length === 0 ? (
+                <p className="bill-filter-empty text-muted no-print" role="status">
+                  No trips match this vehicle filter. Clear the filter to see all rows.
+                </p>
+              ) : null}
               <TransportTable
-                entries={entries}
+                entries={filteredEntries}
                 editingId={editingId}
                 customColumns={customColumns}
                 onEdit={openEdit}
                 onDelete={handleDeleteEntry}
                 onSaveEntry={handleSaveEntry}
                 onCancelEdit={cancelEditEntry}
-                onReorderEntries={handleReorderEntries}
+                onReorderEntries={tableFiltersActive ? undefined : handleReorderEntries}
                 defaultRouteFrom={bill.route_from}
                 defaultRouteTo={bill.route_to}
                 rateType={rateType}
