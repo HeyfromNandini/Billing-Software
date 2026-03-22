@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { DEFAULT_ROUTE } from '../data/sampleEntries'
 import { calculateRateFromWeight } from '../utils/billing'
+import VehicleCombobox from './VehicleCombobox'
+import { COMMON_TO_DESTINATIONS } from '../data/routeDestinations'
 
 const emptyForm = {
   date: '',
@@ -121,7 +123,11 @@ export default function EntryModal({ isOpen, editingEntry, customColumns = [], d
             </label>
             <label>
               <span>Vehicle No</span>
-              <input type="text" name="vehicle_number" value={form.vehicle_number} onChange={handleChange} placeholder="e.g. MH46 AU 5188" />
+              <VehicleCombobox
+                value={form.vehicle_number}
+                onChange={(vehicle_number) => setForm((prev) => ({ ...prev, vehicle_number }))}
+                placeholder="Type to search (e.g. 51)…"
+              />
             </label>
             <label>
               <span>Invoice no</span>
@@ -133,7 +139,13 @@ export default function EntryModal({ isOpen, editingEntry, customColumns = [], d
             </label>
             <label>
               <span>To</span>
-              <input type="text" name="to" value={form.to} onChange={handleChange} placeholder="Khopoli" />
+              <VehicleCombobox
+                options={COMMON_TO_DESTINATIONS}
+                value={form.to}
+                onChange={(to) => setForm((prev) => ({ ...prev, to }))}
+                placeholder="Khopoli, Taloja, or type another…"
+                aria-label="To"
+              />
             </label>
             <label>
               <span>Weight</span>

@@ -33,3 +33,15 @@ export function formatDate(iso) {
 export function grandTotal(entries) {
   return entries.reduce((acc, r) => acc + rowTotal(r), 0)
 }
+
+/** Move item from fromIndex to toIndex (0-based). Sr. no follows array order after reorder. */
+export function reorderEntriesByIndex(entries, fromIndex, toIndex) {
+  if (!Array.isArray(entries) || fromIndex === toIndex) return entries
+  if (fromIndex < 0 || toIndex < 0 || fromIndex >= entries.length || toIndex >= entries.length) {
+    return entries
+  }
+  const next = [...entries]
+  const [item] = next.splice(fromIndex, 1)
+  next.splice(toIndex, 0, item)
+  return next
+}

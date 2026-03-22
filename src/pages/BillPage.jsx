@@ -7,7 +7,17 @@ import BillInfoBlock from '../components/BillInfoBlock'
 import TransportTable, { buildPdfColumnLayout, FIXED_HEADERS } from '../components/TransportTable'
 import TotalsBlock from '../components/TotalsBlock'
 import EntryModal from '../components/EntryModal'
-import { grandTotal, formatDate, rowTotal, rowBalance } from '../utils/billing'
+import VehicleCombobox from '../components/VehicleCombobox'
+import { COMMON_TO_DESTINATIONS } from '../data/routeDestinations'
+import { grandTotal, formatDate, rowTotal, rowBalance, reorderEntriesByIndex } from '../utils/billing'
+import { isDriveLayoutConfigured, companySpreadsheetId } from '../sheets/config'
+import { getSpreadsheetMeta, readBillSheet } from '../sheets/driveLayout'
+import {
+  billSheetTitle,
+  parseBillFromSheetValues,
+  billContentDiffersFromPatch,
+} from '../sheets/billSheetRows'
+import { flushBillToDriveNow, queueBillDriveSyncWithBill } from '../sheets/billDriveSync'
 
 const ROWS_PER_PAGE = 15
 
@@ -23,7 +33,7 @@ const defaultRateRule = {
 
 export default function BillPage() {
   const { companyId, billId } = useParams()
-  const { getCompany, getBill, getClient, updateBill, updateClient } = useApp()
+  const { getCompany, getBill, getClient, updateBill, updateClient, patchBillDriveMeta } = useApp()
   const [modalOpen, setModalOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [billInfoEditing, setBillInfoEditing] = useState(false)
@@ -47,6 +57,10 @@ export default function BillPage() {
   const [editingColumnId, setEditingColumnId] = useState(null)
   const [editingColumnName, setEditingColumnName] = useState('')
   const [editingColumnOrder, setEditingColumnOrder] = useState('')
+  const [sheetConflict, setSheetConflict] = useState(null)
+  const lastLocalEditRef = useRef(0)
+  const billRef = useRef(null)
+  const clientRef = useRef(null)
 
   const company = getCompany(companyId)
   const bill = getBill(billId)
@@ -55,6 +69,83 @@ export default function BillPage() {
   const customColumns = [...rawCustomColumns].map((c) => ({ ...c, order: Math.max(1, Math.min(Number(c.order) || 12, 12)) }))
   const entries = bill?.entries ?? []
   const totalAmount = grandTotal(entries)
+
+  billRef.current = bill
+  clientRef.current = client
+
+  const touchLocal = useCallback(() => {
+    lastLocalEditRef.current = Date.now()
+  }, [])
+
+  const touchLocalAndUpdateBill = useCallback(
+    (id, updates) => {
+      touchLocal()
+      updateBill(id, updates)
+    },
+    [updateBill, touchLocal]
+  )
+
+  useEffect(() => {
+    setSheetConflict(null)
+  }, [billId])
+
+  useEffect(() => {
+    if (!isDriveLayoutConfigured() || !bill || !client) return undefined
+    const sid0 = companySpreadsheetId(bill.company_id)
+    if (!sid0) return undefined
+
+    const poll = async () => {
+      const cur = billRef.current
+      const cli = clientRef.current
+      const sid = cur ? companySpreadsheetId(cur.company_id) : ''
+      if (!cur || !cli || !sid) return
+      const sheetName = billSheetTitle(cur)
+
+      try {
+        const localAt = cur.drive_file_updated_at
+        // Skip full sheet read when Drive says the file hasn’t changed since our last push/pull.
+        // When localAt is missing (never synced from this browser), always read once to set baseline or detect edits.
+        if (localAt) {
+          const meta = await getSpreadsheetMeta(sid)
+          const remote = meta.fileLastUpdated
+          if (!remote) return
+          if (new Date(remote) <= new Date(localAt)) return
+        }
+
+        const data = await readBillSheet({ spreadsheetId: sid, sheetName })
+        if (!data.ok || !data.values) return
+
+        const parsed = parseBillFromSheetValues(data.values, cli)
+        if (!parsed) return
+
+        if (!billContentDiffersFromPatch(cur, parsed.billPatch)) {
+          if (data.fileLastUpdated) {
+            patchBillDriveMeta(cur.id, { drive_file_updated_at: data.fileLastUpdated })
+          }
+          return
+        }
+
+        if (Date.now() - lastLocalEditRef.current < 3000) return
+
+        setSheetConflict({
+          billPatch: parsed.billPatch,
+          fileLastUpdated: data.fileLastUpdated,
+        })
+      } catch (e) {
+        console.error('[Drive] poll bill sheet', e)
+      }
+    }
+
+    const iv = setInterval(poll, 20000)
+    poll()
+    return () => clearInterval(iv)
+  }, [
+    billId,
+    bill?.company_id,
+    client?.id,
+    bill?.bill_number,
+    patchBillDriveMeta,
+  ])
 
   useEffect(() => {
     if (bill) {
@@ -100,7 +191,7 @@ export default function BillPage() {
       e?.preventDefault?.()
       const d = billEditForm.bill_date
       const billDateDisplay = d && d.includes('-') ? d.split('-').reverse().join('.') : d
-      updateBill(billId, {
+      touchLocalAndUpdateBill(billId, {
         bill_number: billEditForm.bill_number.trim(),
         bill_date: billDateDisplay,
         client_name: billEditForm.client_name.trim(),
@@ -110,7 +201,7 @@ export default function BillPage() {
       })
       setBillInfoEditing(false)
     },
-    [billId, updateBill, billEditForm]
+    [billId, touchLocalAndUpdateBill, billEditForm]
   )
 
   const cancelBillInfoEdit = useCallback(() => setBillInfoEditing(false), [])
@@ -126,8 +217,12 @@ export default function BillPage() {
       updateClient(client.id, { custom_columns: [...cols, newCol] })
       setNewColumnName('')
       setNewColumnOrder('12')
+      if (bill && isDriveLayoutConfigured()) {
+        touchLocal()
+        queueBillDriveSyncWithBill(bill)
+      }
     },
-    [client, newColumnName, newColumnOrder, updateClient]
+    [client, newColumnName, newColumnOrder, updateClient, bill, touchLocal]
   )
 
   const updateCustomColumn = useCallback(
@@ -141,8 +236,12 @@ export default function BillPage() {
       setEditingColumnId(null)
       setEditingColumnName('')
       setEditingColumnOrder('')
+      if (bill && isDriveLayoutConfigured()) {
+        touchLocal()
+        queueBillDriveSyncWithBill(bill)
+      }
     },
-    [client, updateClient]
+    [client, updateClient, bill, touchLocal]
   )
 
   const removeCustomColumn = useCallback(
@@ -155,8 +254,12 @@ export default function BillPage() {
         setEditingColumnName('')
         setEditingColumnOrder('')
       }
+      if (bill && isDriveLayoutConfigured()) {
+        touchLocal()
+        queueBillDriveSyncWithBill(bill)
+      }
     },
-    [client, updateClient, editingColumnId]
+    [client, updateClient, editingColumnId, bill, touchLocal]
   )
 
   const startEditColumn = useCallback((col) => {
@@ -197,20 +300,29 @@ export default function BillPage() {
       } else {
         newEntries = [...(bill.entries ?? []), newEntry]
       }
-      updateBill(billId, { entries: newEntries })
+      touchLocalAndUpdateBill(billId, { entries: newEntries })
       closeModal()
     },
-    [bill, billId, updateBill, closeModal]
+    [bill, billId, touchLocalAndUpdateBill, closeModal]
   )
 
   const handleDeleteEntry = useCallback(
     (id) => {
       if (!bill || !window.confirm('Remove this entry?')) return
       const newEntries = (bill.entries ?? []).filter((e) => e.id !== id)
-      updateBill(billId, { entries: newEntries })
+      touchLocalAndUpdateBill(billId, { entries: newEntries })
       if (editingId === id) setEditingId(null)
     },
-    [bill, billId, updateBill, editingId]
+    [bill, billId, touchLocalAndUpdateBill, editingId]
+  )
+
+  const handleReorderEntries = useCallback(
+    (fromIndex, toIndex) => {
+      if (!bill) return
+      const next = reorderEntriesByIndex(entries, fromIndex, toIndex)
+      touchLocalAndUpdateBill(billId, { entries: next })
+    },
+    [bill, billId, entries, touchLocalAndUpdateBill]
   )
 
   const billCardRef = useRef(null)
@@ -413,7 +525,7 @@ export default function BillPage() {
   const handleRateRuleSave = useCallback(
     (e) => {
       e.preventDefault()
-      updateBill(billId, {
+      touchLocalAndUpdateBill(billId, {
         rate_type: rateType,
         rate_fixed: rateFixed,
         rate_base_weight: rateVariable.rate_base_weight,
@@ -421,7 +533,7 @@ export default function BillPage() {
         rate_extra_per_ton: rateVariable.rate_extra_per_ton,
       })
     },
-    [billId, updateBill, rateType, rateFixed, rateVariable]
+    [billId, touchLocalAndUpdateBill, rateType, rateFixed, rateVariable]
   )
 
   const billRateRule =
@@ -433,6 +545,38 @@ export default function BillPage() {
           rate_extra_per_ton: rateVariable.rate_extra_per_ton,
         }
       : null
+
+  const handleLoadFromSheet = useCallback(() => {
+    if (!sheetConflict || !bill) return
+    touchLocal()
+    const patch = { ...sheetConflict.billPatch }
+    if (Array.isArray(patch.entries) && Array.isArray(bill.entries) && patch.entries.length === bill.entries.length) {
+      patch.entries = patch.entries.map((e, i) => ({ ...e, id: bill.entries[i].id }))
+    }
+    updateBill(billId, patch)
+    if (sheetConflict.fileLastUpdated) {
+      patchBillDriveMeta(billId, { drive_file_updated_at: sheetConflict.fileLastUpdated })
+    }
+    setSheetConflict(null)
+  }, [sheetConflict, bill, billId, updateBill, patchBillDriveMeta, touchLocal])
+
+  const handlePushToSheet = useCallback(async () => {
+    if (!bill) return
+    touchLocal()
+    try {
+      await flushBillToDriveNow(bill)
+    } catch (e) {
+      console.error('[Drive] overwrite sheet', e)
+    }
+    setSheetConflict(null)
+  }, [bill, touchLocal])
+
+  const handleDismissSheetConflict = useCallback(() => {
+    if (sheetConflict?.fileLastUpdated) {
+      patchBillDriveMeta(billId, { drive_file_updated_at: sheetConflict.fileLastUpdated })
+    }
+    setSheetConflict(null)
+  }, [sheetConflict, billId, patchBillDriveMeta])
 
   if (!company || !bill) {
     return (
@@ -453,6 +597,24 @@ export default function BillPage() {
     <div className="app-wrap">
       <Header companyName={company.company_name} backTo={backTo} />
       <main className="main bill-page-main">
+        {sheetConflict ? (
+          <div className="drive-sync-banner" role="alert">
+            <p>
+              This bill’s Google Sheet was updated outside the app (or in another tab). Choose how to resolve it.
+            </p>
+            <div className="drive-sync-banner-actions">
+              <button type="button" className="btn btn-primary btn-sm" onClick={handleLoadFromSheet}>
+                Load from sheet
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={handlePushToSheet}>
+                Overwrite sheet with app
+              </button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={handleDismissSheetConflict}>
+                Ignore for now
+              </button>
+            </div>
+          </div>
+        ) : null}
         <div className="bill-page-layout">
           <section className="bill-main">
             <div className="bill-card" ref={billCardRef}>
@@ -483,7 +645,13 @@ export default function BillPage() {
                       </label>
                       <label>
                         <span>To</span>
-                        <input type="text" name="route_to" value={billEditForm.route_to} onChange={handleBillEditChange} />
+                        <VehicleCombobox
+                          options={COMMON_TO_DESTINATIONS}
+                          value={billEditForm.route_to}
+                          onChange={(route_to) => setBillEditForm((prev) => ({ ...prev, route_to }))}
+                          placeholder="Khopoli, Taloja, or other…"
+                          aria-label="Route To"
+                        />
                       </label>
                     </div>
                     <div className="form-actions no-print">
@@ -515,6 +683,7 @@ export default function BillPage() {
                 onDelete={handleDeleteEntry}
                 onSaveEntry={handleSaveEntry}
                 onCancelEdit={cancelEditEntry}
+                onReorderEntries={handleReorderEntries}
                 defaultRouteFrom={bill.route_from}
                 defaultRouteTo={bill.route_to}
                 rateType={rateType}

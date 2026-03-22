@@ -8,7 +8,16 @@ const emptyCompanyInfo = { address: '', pan_number: '', phone_1: '', phone_2: ''
 
 export default function CompanyPage() {
   const { companyId } = useParams()
-  const { getCompany, getClientsByCompany, addClient, updateClient, deleteClient, updateCompany } = useApp()
+  const {
+    getCompany,
+    getClientsByCompany,
+    addClient,
+    updateClient,
+    deleteClient,
+    updateCompany,
+    driveSyncError,
+    clearDriveSyncError,
+  } = useApp()
   const [showForm, setShowForm] = useState(false)
   const [editingClient, setEditingClient] = useState(null)
   const [form, setForm] = useState(emptyClient)
@@ -102,6 +111,17 @@ export default function CompanyPage() {
 
   return (
     <div className="page company-page">
+      {driveSyncError ? (
+        <div className="drive-sync-error-banner" role="alert">
+          <p>
+            <strong>Google Drive sync error.</strong> Copy this message if you need help:
+          </p>
+          <pre className="drive-sync-error-pre">{driveSyncError}</pre>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={clearDriveSyncError}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       <div className="page-header">
         <h2>{company.company_name}</h2>
       </div>

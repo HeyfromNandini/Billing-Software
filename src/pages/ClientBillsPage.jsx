@@ -1,11 +1,14 @@
+import { useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
 import { grandTotal } from '../utils/billing'
+import UploadBillModal from '../components/UploadBillModal'
 
 export default function ClientBillsPage() {
   const { companyId, clientId } = useParams()
   const navigate = useNavigate()
   const { getCompany, getClient, getBillsByClient, addBill, deleteBill } = useApp()
+  const [uploadOpen, setUploadOpen] = useState(false)
 
   const company = getCompany(companyId)
   const client = getClient(clientId)
@@ -28,6 +31,16 @@ export default function ClientBillsPage() {
     navigate(`/company/${companyId}/bill/${billId}`)
   }
 
+  const handleImportedBill = (imported) => {
+    const billId = addBill(companyId, clientId, {
+      ...imported,
+      client_name: (imported.client_name && String(imported.client_name).trim()) || client.client_name,
+      client_location:
+        (imported.client_location && String(imported.client_location).trim()) || client.location,
+    })
+    navigate(`/company/${companyId}/bill/${billId}`)
+  }
+
   const handleDeleteBill = (e, bill) => {
     e.preventDefault()
     e.stopPropagation()
@@ -41,14 +54,26 @@ export default function ClientBillsPage() {
       <div className="page-header">
         <Link to={`/company/${companyId}`} className="back-link">← {company.company_name}</Link>
         <h2>{client.client_name}</h2>
-        <button type="button" className="btn btn-primary" onClick={handleNewBill}>
-          + New bill
-        </button>
+        <div className="client-bills-header-actions">
+          <button type="button" className="btn btn-secondary" onClick={() => setUploadOpen(true)}>
+            Upload bill
+          </button>
+          <button type="button" className="btn btn-primary" onClick={handleNewBill}>
+            + New bill
+          </button>
+        </div>
       </div>
 
       {client.location && (
         <p className="client-location text-muted">{client.location}</p>
       )}
+
+      <UploadBillModal
+        isOpen={uploadOpen}
+        client={client}
+        onClose={() => setUploadOpen(false)}
+        onImported={handleImportedBill}
+      />
 
       <section className="bills-section">
         <h3>Bills</h3>

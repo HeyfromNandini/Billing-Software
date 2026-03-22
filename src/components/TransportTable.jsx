@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState, useRef, useEffect, useCallback } from 'react'
 import { formatDate, rowTotal, rowBalance } from '../utils/billing'
 import EditableEntryRow from './EditableEntryRow'
 
@@ -41,6 +41,7 @@ export default function TransportTable({
   onDelete,
   onSaveEntry,
   onCancelEdit,
+  onReorderEntries,
   defaultRouteFrom,
   defaultRouteTo,
   rateType,
@@ -48,6 +49,86 @@ export default function TransportTable({
   rateRule,
 }) {
   const layout = useMemo(() => buildColumnLayout(customColumns), [customColumns])
+  const [draggingIndex, setDraggingIndex] = useState(null)
+  const [dragOverIndex, setDragOverIndex] = useState(null)
+  const pointerFromRef = useRef(null)
+  const latestOverRef = useRef(null)
+  const onReorderRef = useRef(onReorderEntries)
+  const canReorder = typeof onReorderEntries === 'function' && !editingId
+
+  useEffect(() => {
+    onReorderRef.current = onReorderEntries
+  }, [onReorderEntries])
+
+  const rowFromClientPoint = useCallback((clientX, clientY) => {
+    const el = document.elementFromPoint(clientX, clientY)
+    return el?.closest?.('tr[data-entry-row-index]') ?? null
+  }, [])
+
+  const handleRowHandlePointerDown = useCallback(
+    (e, rowIndex) => {
+      if (!canReorder || pointerFromRef.current !== null) return
+      if (e.pointerType === 'mouse' && e.button !== 0) return
+      e.preventDefault()
+      e.stopPropagation()
+      pointerFromRef.current = rowIndex
+      latestOverRef.current = rowIndex
+      setDraggingIndex(rowIndex)
+      setDragOverIndex(rowIndex)
+      e.currentTarget.setPointerCapture(e.pointerId)
+    },
+    [canReorder]
+  )
+
+  const handleRowHandlePointerMove = useCallback(
+    (e) => {
+      if (pointerFromRef.current === null) return
+      if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+      const tr = rowFromClientPoint(e.clientX, e.clientY)
+      if (tr) {
+        const idx = parseInt(tr.getAttribute('data-entry-row-index'), 10)
+        if (!Number.isNaN(idx)) {
+          latestOverRef.current = idx
+          setDragOverIndex(idx)
+        }
+      }
+    },
+    [rowFromClientPoint]
+  )
+
+  const handleRowHandlePointerUp = useCallback(
+    (e) => {
+      if (pointerFromRef.current === null) return
+      const from = pointerFromRef.current
+      const tr = rowFromClientPoint(e.clientX, e.clientY)
+      let to = tr ? parseInt(tr.getAttribute('data-entry-row-index'), 10) : NaN
+      if (Number.isNaN(to) && latestOverRef.current != null) {
+        to = latestOverRef.current
+      }
+      pointerFromRef.current = null
+      latestOverRef.current = null
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        try {
+          e.currentTarget.releasePointerCapture(e.pointerId)
+        } catch (_) {
+          /* already released */
+        }
+      }
+      setDraggingIndex(null)
+      setDragOverIndex(null)
+      if (!Number.isNaN(to) && from !== to) {
+        onReorderRef.current?.(from, to)
+      }
+    },
+    [rowFromClientPoint]
+  )
+
+  const handleRowHandleLostCapture = useCallback(() => {
+    pointerFromRef.current = null
+    latestOverRef.current = null
+    setDraggingIndex(null)
+    setDragOverIndex(null)
+  }, [])
 
   const renderFixedCell = (row, index, key) => {
     const tot = rowTotal(row)
@@ -78,7 +159,15 @@ export default function TransportTable({
               {layout.map((item, idx) => {
                 if (item.type === 'action') return <th key="action" className="no-print action-col">Action</th>
                 if (item.type === 'custom') return <th key={item.col.id}>{item.col.name}</th>
-                return <th key={`fixed-${item.index}`} className={item.index === 1 ? 'col-sr-no' : ''}>{FIXED_HEADERS[item.index - 1]}</th>
+                return (
+                  <th
+                    key={`fixed-${item.index}`}
+                    className={item.index === 1 ? 'col-sr-no' : ''}
+                    title={item.index === 1 && canReorder ? 'Drag ⋮⋮ beside a row’s number to change order' : undefined}
+                  >
+                    {FIXED_HEADERS[item.index - 1]}
+                  </th>
+                )
               })}
             </tr>
           </thead>
@@ -103,21 +192,50 @@ export default function TransportTable({
                 )
               }
               return (
-                <tr key={row.id}>
+                <tr
+                  key={row.id}
+                  data-entry-row-index={index}
+                  className={[
+                    draggingIndex === index ? 'is-row-dragging' : '',
+                    dragOverIndex === index && draggingIndex != null && draggingIndex !== index ? 'is-row-drag-over' : '',
+                  ].filter(Boolean).join(' ') || undefined}
+                >
                   {layout.map((item) => {
                     if (item.type === 'action') {
                       return (
                         <td key="action" className="no-print">
                           <div className="row-actions">
-                            <button type="button" className="btn-edit" aria-label="Edit" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onEdit(row.id); }}>Edit</button>
+                            <button type="button" className="btn-edit" draggable={false} aria-label="Edit" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onEdit(row.id); }}>Edit</button>
                             <span className="row-actions-sep" aria-hidden="true">|</span>
-                            <button type="button" className="btn-delete" aria-label="Delete" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(row.id); }}>Delete</button>
+                            <button type="button" className="btn-delete" draggable={false} aria-label="Delete" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(row.id); }}>Delete</button>
                           </div>
                         </td>
                       )
                     }
                     if (item.type === 'custom') {
                       return <td key={item.col.id}>{row.custom?.[item.col.id] ?? '—'}</td>
+                    }
+                    if (item.index === 1 && canReorder) {
+                      return (
+                        <td key="fixed-1" className="num col-sr-no col-drag-cell">
+                          <span
+                            className="row-drag-handle no-print"
+                            role="button"
+                            tabIndex={0}
+                            style={{ touchAction: 'none' }}
+                            onPointerDown={(e) => handleRowHandlePointerDown(e, index)}
+                            onPointerMove={handleRowHandlePointerMove}
+                            onPointerUp={handleRowHandlePointerUp}
+                            onPointerCancel={handleRowHandleLostCapture}
+                            onLostPointerCapture={handleRowHandleLostCapture}
+                            title="Hold and drag to reorder rows"
+                            aria-label={`Drag to reorder row ${index + 1}`}
+                          >
+                            ⋮⋮
+                          </span>
+                          <span className="sr-no-value">{index + 1}</span>
+                        </td>
+                      )
                     }
                     const val = renderFixedCell(row, index, item.index)
                     const isNum = [1, 7, 8, 9, 10, 11].includes(item.index)

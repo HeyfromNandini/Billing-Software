@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import VehicleCombobox from './VehicleCombobox'
+import { COMMON_TO_DESTINATIONS } from '../data/routeDestinations'
 
 export default function BillEditModal({ isOpen, bill, onClose, onSave }) {
   const [form, setForm] = useState({
@@ -86,7 +88,13 @@ export default function BillEditModal({ isOpen, bill, onClose, onSave }) {
             </label>
             <label>
               <span>Route To</span>
-              <input type="text" name="route_to" value={form.route_to} onChange={handleChange} placeholder="Khopoli" />
+              <VehicleCombobox
+                options={COMMON_TO_DESTINATIONS}
+                value={form.route_to}
+                onChange={(route_to) => setForm((prev) => ({ ...prev, route_to }))}
+                placeholder="Khopoli, Taloja, or other…"
+                aria-label="Route To"
+              />
             </label>
           </div>
           <div className="form-actions">

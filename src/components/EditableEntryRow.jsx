@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { DEFAULT_ROUTE } from '../data/sampleEntries'
 import { calculateRateFromWeight, rowTotal, rowBalance } from '../utils/billing'
+import VehicleCombobox from './VehicleCombobox'
+import { COMMON_TO_DESTINATIONS } from '../data/routeDestinations'
 
 export default function EditableEntryRow({
   entry,
@@ -96,10 +98,31 @@ export default function EditableEntryRow({
     switch (key) {
       case 1: return <td key="fixed-1" className="num col-sr-no">{index + 1}</td>
       case 2: return <td key="fixed-2"><input type="date" name="date" value={form.date ?? ''} onChange={handleChange} required className="cell-input" aria-label="Date" /></td>
-      case 3: return <td key="fixed-3"><input type="text" name="vehicle_number" value={form.vehicle_number ?? ''} onChange={handleChange} className="cell-input" placeholder="Vehicle No" aria-label="Vehicle No" /></td>
+      case 3: return (
+        <td key="fixed-3">
+          <VehicleCombobox
+            value={form.vehicle_number ?? ''}
+            onChange={(vehicle_number) => setForm((prev) => ({ ...prev, vehicle_number }))}
+            inputClassName="cell-input"
+            placeholder="Search vehicle…"
+            aria-label="Vehicle No"
+          />
+        </td>
+      )
       case 4: return <td key="fixed-4"><input type="text" name="invoice_number" value={form.invoice_number ?? ''} onChange={handleChange} required className="cell-input" placeholder="Invoice no" aria-label="Invoice no" /></td>
       case 5: return <td key="fixed-5"><input type="text" name="from" value={form.from ?? ''} onChange={handleChange} className="cell-input" placeholder="From" aria-label="From" /></td>
-      case 6: return <td key="fixed-6"><input type="text" name="to" value={form.to ?? ''} onChange={handleChange} className="cell-input" placeholder="To" aria-label="To" /></td>
+      case 6: return (
+        <td key="fixed-6">
+          <VehicleCombobox
+            options={COMMON_TO_DESTINATIONS}
+            value={form.to ?? ''}
+            onChange={(to) => setForm((prev) => ({ ...prev, to }))}
+            inputClassName="cell-input"
+            placeholder="To…"
+            aria-label="To"
+          />
+        </td>
+      )
       case 7: return <td key="fixed-7" className="num"><input type="number" name="weight" min={0} step={1} value={form.weight === '' || form.weight == null ? '' : form.weight} onChange={handleChange} className="cell-input num" aria-label="Weight" /></td>
       case 8: return <td key="fixed-8" className="num"><input type="number" name="rate" min={0} step={1} value={form.rate === '' || form.rate == null ? '' : form.rate} onChange={handleChange} required className="cell-input num" aria-label="Rate" /></td>
       case 9: return <td key="fixed-9" className="num">{tot}</td>
@@ -114,10 +137,27 @@ export default function EditableEntryRow({
       <tr className="editable-entry-row">
         <td className="num">{index + 1}</td>
         <td><input type="date" name="date" value={form.date ?? ''} onChange={handleChange} required className="cell-input" /></td>
-        <td><input type="text" name="vehicle_number" value={form.vehicle_number ?? ''} onChange={handleChange} className="cell-input" /></td>
+        <td>
+          <VehicleCombobox
+            value={form.vehicle_number ?? ''}
+            onChange={(vehicle_number) => setForm((prev) => ({ ...prev, vehicle_number }))}
+            inputClassName="cell-input"
+            placeholder="Search vehicle…"
+            aria-label="Vehicle No"
+          />
+        </td>
         <td><input type="text" name="invoice_number" value={form.invoice_number ?? ''} onChange={handleChange} required className="cell-input" /></td>
         <td><input type="text" name="from" value={form.from ?? ''} onChange={handleChange} className="cell-input" /></td>
-        <td><input type="text" name="to" value={form.to ?? ''} onChange={handleChange} className="cell-input" /></td>
+        <td>
+          <VehicleCombobox
+            options={COMMON_TO_DESTINATIONS}
+            value={form.to ?? ''}
+            onChange={(to) => setForm((prev) => ({ ...prev, to }))}
+            inputClassName="cell-input"
+            placeholder="To…"
+            aria-label="To"
+          />
+        </td>
         <td className="num"><input type="number" name="weight" min={0} step={1} value={form.weight === '' || form.weight == null ? '' : form.weight} onChange={handleChange} className="cell-input num" /></td>
         <td className="num"><input type="number" name="rate" min={0} step={1} value={form.rate === '' || form.rate == null ? '' : form.rate} onChange={handleChange} required className="cell-input num" /></td>
         <td className="num">{tot}</td>

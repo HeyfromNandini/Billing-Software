@@ -1,9 +1,0 @@
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    // Single-doc app state (billingAppData/main). Replace with auth-based rules before production.
-    match /billingAppData/{docId} {
-      allow read, write: if true;
-    }
-  }
-}

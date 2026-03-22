@@ -1,6 +1,12 @@
-# Firebase (Firestore) for this app
+# Firebase (deprecated)
 
-The app stores all billing data in **one Firestore document**: `billingAppData/main` with fields `companies`, `clients`, and `bills` (same shape as the previous `localStorage` export).
+**This app no longer uses Firebase.** Sync is now **Google Sheets** via a **Node billing API** and **service account** — see [`google-sheets-setup.md`](google-sheets-setup.md).
+
+The notes below are kept only if you maintain an old fork or custom branch.
+
+---
+
+The app used to store all billing data in **one Firestore document**: `billingAppData/main` with fields `companies`, `clients`, and `bills` (same shape as the `localStorage` export).
 
 ## 1. Create a Firebase project
 

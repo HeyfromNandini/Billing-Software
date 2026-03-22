@@ -1,4 +1,10 @@
-# Proper Firestore “database” setup for this project
+# Firestore (archived)
+
+The app **no longer uses Firestore**. Use **[google-sheets-setup.md](google-sheets-setup.md)** instead.
+
+---
+
+## Historical notes
 
 Firestore does **not** use SQL tables. You **do not** create collections or fields by hand in the console for this app. The app writes one document; Firestore creates the path automatically on first write.
 

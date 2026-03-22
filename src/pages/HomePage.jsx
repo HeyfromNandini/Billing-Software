@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
+import { isDriveLayoutConfigured } from '../sheets/config'
 
 const emptyForm = {
   company_name: '',
@@ -79,6 +80,14 @@ export default function HomePage() {
   return (
     <div className="page homepage">
       <p className="home-intro">Create a company, then add and edit bills for it.</p>
+      {isDriveLayoutConfigured() ? (
+        <p className="home-drive-hint">
+          <strong>Google Drive:</strong> each navbar company (Aadarsh, Deva, Sangita) uses <strong>one</strong> shared
+          spreadsheet; bills appear as <strong>tabs</strong> there. Home’s <strong>+ Add company</strong> only adds
+          another row in the app — it does not create Drive files. Clients and bills are managed inside each navbar
+          company page.
+        </p>
+      ) : null}
       <div className="page-header">
         <h2>Companies</h2>
         <button type="button" className="btn btn-primary" onClick={() => { setEditingCompany(null); setShowForm(true) }}>

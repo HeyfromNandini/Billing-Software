@@ -5,73 +5,131 @@ import {
   mergeLocalClientsAndBillsIfFirestoreEmpty,
 } from '../data/appStateLocal'
 import { mergeCompaniesWithDefaults } from '../data/seedData'
-import { isFirebaseConfigured } from '../firebase/config'
-import { subscribeAppData, saveAppDataToFirestore } from '../firebase/appData'
+import {
+  isGoogleSheetsConfigured,
+  isDriveLayoutConfigured,
+  companySpreadsheetId,
+  getGoogleSyncSetupWarnings,
+} from '../sheets/config'
+import { fetchAppDataFromSheets, saveAppDataToSheets } from '../sheets/appData'
+import {
+  registerDriveSyncContext,
+  queueBillDriveSyncWithBill,
+  cancelBillDriveSync,
+  removeBillSheetFromDrive,
+} from '../sheets/billDriveSync'
 
 const AppContext = createContext(null)
+
+function applyRemotePayload(data, setSkipSave) {
+  const recovered = mergeLocalClientsAndBillsIfFirestoreEmpty(data)
+  const mergedCompanies = mergeCompaniesWithDefaults(recovered.companies)
+  const mergedDiffers =
+    JSON.stringify(mergedCompanies) !== JSON.stringify(data.companies ?? []) ||
+    JSON.stringify(recovered.clients ?? []) !== JSON.stringify(data.clients ?? []) ||
+    JSON.stringify(recovered.bills ?? []) !== JSON.stringify(data.bills ?? [])
+  setSkipSave(!mergedDiffers)
+  return {
+    companies: mergedCompanies,
+    clients: Array.isArray(recovered.clients) ? recovered.clients : [],
+    bills: Array.isArray(recovered.bills) ? recovered.bills : [],
+  }
+}
 
 export function AppProvider({ children }) {
   const [companies, setCompanies] = useState([])
   const [clients, setClients] = useState([])
   const [bills, setBills] = useState([])
   const [hydrated, setHydrated] = useState(false)
+  const [driveSyncError, setDriveSyncError] = useState(null)
+  const [sheetsConnectionError, setSheetsConnectionError] = useState(null)
   const skipSaveFromRemote = useRef(false)
-  const latestRef = useRef({ companies: [], clients: [], bills: [] })
-  latestRef.current = { companies, clients, bills }
+
+  const clearDriveSyncError = useCallback(() => setDriveSyncError(null), [])
+  const clearSheetsConnectionError = useCallback(() => setSheetsConnectionError(null), [])
 
   useEffect(() => {
-    if (!isFirebaseConfigured()) {
-      const data = loadAppStateFromLocalStorage()
-      setCompanies(mergeCompaniesWithDefaults(data.companies))
-      setClients(data.clients)
-      setBills(data.bills)
+    let cancelled = false
+
+    if (!isGoogleSheetsConfigured()) {
+      const d = loadAppStateFromLocalStorage()
+      setCompanies(mergeCompaniesWithDefaults(d.companies))
+      setClients(d.clients)
+      setBills(d.bills)
       setHydrated(true)
-      return
+      return undefined
     }
-    const unsub = subscribeAppData(
-      (data) => {
-        const recovered = mergeLocalClientsAndBillsIfFirestoreEmpty(data)
-        const mergedCompanies = mergeCompaniesWithDefaults(recovered.companies)
-        const mergedDiffers =
-          JSON.stringify(mergedCompanies) !== JSON.stringify(data.companies ?? []) ||
-          JSON.stringify(recovered.clients ?? []) !== JSON.stringify(data.clients ?? []) ||
-          JSON.stringify(recovered.bills ?? []) !== JSON.stringify(data.bills ?? [])
-        // If we merged defaults or restored localStorage clients/bills, persist to Firestore.
-        skipSaveFromRemote.current = !mergedDiffers
-        setCompanies(mergedCompanies)
-        setClients(Array.isArray(recovered.clients) ? recovered.clients : [])
-        setBills(Array.isArray(recovered.bills) ? recovered.bills : [])
-        setHydrated(true)
-      },
-      (err) => console.error('[Firestore]', err),
-      () => loadAppStateFromLocalStorage()
-    )
-    return () => unsub()
+
+    ;(async () => {
+      try {
+        const raw = await fetchAppDataFromSheets()
+        if (cancelled) return
+        if (raw?.masterDisabled) {
+          const d = loadAppStateFromLocalStorage()
+          setCompanies(mergeCompaniesWithDefaults(d.companies))
+          setClients(d.clients)
+          setBills(d.bills)
+        } else {
+          const next = applyRemotePayload(raw, (v) => { skipSaveFromRemote.current = v })
+          setCompanies(next.companies)
+          setClients(next.clients)
+          setBills(next.bills)
+        }
+      } catch (e) {
+        console.error('[Google Sheets]', e)
+        if (cancelled) return
+        setSheetsConnectionError(e?.message || String(e))
+        const d = loadAppStateFromLocalStorage()
+        setCompanies(mergeCompaniesWithDefaults(d.companies))
+        setClients(d.clients)
+        setBills(d.bills)
+      } finally {
+        if (!cancelled) setHydrated(true)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
   }, [])
+
+  const patchBillDriveMeta = useCallback((billId, updates) => {
+    setBills((prev) => prev.map((b) => (b.id === billId ? { ...b, ...updates } : b)))
+  }, [])
+
+  useEffect(() => {
+    registerDriveSyncContext(() => ({ companies, clients, patchBillDriveMeta }))
+  }, [companies, clients, patchBillDriveMeta])
+
+  const driveBackfillBillIdsRef = useRef(new Set())
+  useEffect(() => {
+    if (!hydrated || !isDriveLayoutConfigured()) return
+    bills.forEach((b) => {
+      if (!b?.id || !companySpreadsheetId(b.company_id)) return
+      if (driveBackfillBillIdsRef.current.has(b.id)) return
+      driveBackfillBillIdsRef.current.add(b.id)
+      queueBillDriveSyncWithBill(b)
+    })
+  }, [hydrated, bills])
 
   useEffect(() => {
     if (!hydrated) return
-    if (!isFirebaseConfigured()) {
+    // Without a master sheet, POST /app-data is skipped — localStorage must still be updated on every change.
+    if (isGoogleSheetsConfigured() && skipSaveFromRemote.current) {
+      skipSaveFromRemote.current = false
       saveAppStateToLocalStorage(companies, clients, bills)
       return
     }
-    if (skipSaveFromRemote.current) {
-      skipSaveFromRemote.current = false
+    if (!isGoogleSheetsConfigured()) {
+      saveAppStateToLocalStorage(companies, clients, bills)
       return
     }
     const t = setTimeout(() => {
-      saveAppDataToFirestore({ companies, clients, bills }).catch((e) => console.error('[Firestore save]', e))
+      saveAppStateToLocalStorage(companies, clients, bills)
+      saveAppDataToSheets({ companies, clients, bills }).catch((e) => console.error('[Google Sheets save]', e))
     }, 450)
     return () => clearTimeout(t)
   }, [hydrated, companies, clients, bills])
-
-  useEffect(() => {
-    return () => {
-      if (!isFirebaseConfigured()) return
-      const s = latestRef.current
-      saveAppDataToFirestore(s).catch(() => {})
-    }
-  }, [])
 
   const getCompany = useCallback(
     (id) => companies.find((c) => c.id === id),
@@ -94,11 +152,18 @@ export function AppProvider({ children }) {
     return id
   }, [])
 
-  const addClient = useCallback((companyId, client) => {
-    const id = `client-${Date.now()}`
-    setClients((prev) => [...prev, { ...client, id, company_id: companyId, custom_columns: client.custom_columns ?? [] }])
-    return id
-  }, [])
+  const addClient = useCallback(
+    (companyId, client) => {
+      const id = `client-${Date.now()}`
+      const company = companies.find((c) => c.id === companyId)
+      setClients((prev) => [
+        ...prev,
+        { ...client, id, company_id: companyId, custom_columns: client.custom_columns ?? [] },
+      ])
+      return id
+    },
+    [companies]
+  )
 
   const updateClient = useCallback((id, updates) => {
     setClients((prev) =>
@@ -106,10 +171,23 @@ export function AppProvider({ children }) {
     )
   }, [])
 
-  const deleteClient = useCallback((id) => {
-    setClients((prev) => prev.filter((c) => c.id !== id))
-    setBills((prev) => prev.filter((b) => b.client_id !== id))
-  }, [])
+  const deleteClient = useCallback(
+    (clientId) => {
+      const cli = clients.find((c) => c.id === clientId)
+      if (cli && isDriveLayoutConfigured()) {
+        bills
+          .filter((b) => b.client_id === clientId)
+          .forEach((b) => {
+            void removeBillSheetFromDrive(b).catch((e) =>
+              console.error('[Drive] delete client bill tabs', e)
+            )
+          })
+      }
+      setClients((prev) => prev.filter((c) => c.id !== clientId))
+      setBills((prev) => prev.filter((b) => b.client_id !== clientId))
+    },
+    [clients, bills]
+  )
 
   const getBillsByClient = useCallback(
     (companyId, clientId) =>
@@ -159,6 +237,7 @@ export function AppProvider({ children }) {
         rate_base_amount: bill.rate_base_amount ?? 7500,
         rate_extra_per_ton: bill.rate_extra_per_ton ?? 275,
       }
+      queueBillDriveSyncWithBill(newBill)
       return [...prev, newBill]
     })
     return id
@@ -166,13 +245,28 @@ export function AppProvider({ children }) {
 
   const updateBill = useCallback((billId, updates) => {
     setBills((prev) =>
-      prev.map((b) => (b.id === billId ? { ...b, ...updates } : b))
+      prev.map((b) => {
+        if (b.id !== billId) return b
+        const merged = { ...b, ...updates }
+        queueBillDriveSyncWithBill(merged)
+        return merged
+      })
     )
   }, [])
 
-  const deleteBill = useCallback((billId) => {
-    setBills((prev) => prev.filter((b) => b.id !== billId))
-  }, [])
+  const deleteBill = useCallback(
+    (billId) => {
+      const bill = bills.find((b) => b.id === billId)
+      cancelBillDriveSync(billId)
+      if (bill) {
+        void removeBillSheetFromDrive(bill).catch((e) =>
+          console.error('[Drive] delete bill sheet', e)
+        )
+      }
+      setBills((prev) => prev.filter((b) => b.id !== billId))
+    },
+    [bills]
+  )
 
   const getBill = useCallback(
     (id) => bills.find((b) => b.id === id),
@@ -185,18 +279,37 @@ export function AppProvider({ children }) {
     )
   }, [])
 
-  const deleteCompany = useCallback((id) => {
-    setCompanies((prev) => prev.filter((c) => c.id !== id))
-    setClients((prev) => prev.filter((c) => c.company_id !== id))
-    setBills((prev) => prev.filter((b) => b.company_id !== id))
-  }, [])
+  const deleteCompany = useCallback(
+    (id) => {
+      if (isDriveLayoutConfigured()) {
+        bills
+          .filter((b) => b.company_id === id)
+          .forEach((b) => {
+            void removeBillSheetFromDrive(b).catch((e) =>
+              console.error('[Drive] delete company bill tabs', e)
+            )
+          })
+      }
+      setCompanies((prev) => prev.filter((c) => c.id !== id))
+      setClients((prev) => prev.filter((c) => c.company_id !== id))
+      setBills((prev) => prev.filter((b) => b.company_id !== id))
+    },
+    [bills]
+  )
 
   const value = {
     companies,
     clients,
     bills,
     hydrated,
-    useCloudStorage: isFirebaseConfigured(),
+    useGoogleSheets: isGoogleSheetsConfigured(),
+    driveSyncError,
+    clearDriveSyncError,
+    sheetsConnectionError,
+    clearSheetsConnectionError,
+    googleSyncSetupWarnings: getGoogleSyncSetupWarnings(),
+    /** @deprecated use useGoogleSheets — Firebase was removed */
+    useCloudStorage: false,
     getCompany,
     getClientsByCompany,
     getClient,
@@ -210,6 +323,7 @@ export function AppProvider({ children }) {
     updateBill,
     deleteBill,
     getBill,
+    patchBillDriveMeta,
     updateCompany,
     deleteCompany,
   }

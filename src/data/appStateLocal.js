@@ -12,7 +12,7 @@ function normalizeClientRow(c) {
 
 /**
  * Returns parsed app state from localStorage only if the blob looks valid (not defaults).
- * Used to recover clients/bills into Firestore without inventing data when nothing is stored.
+ * Used to recover clients/bills into remote sync without inventing data when nothing is stored.
  */
 export function tryLoadAppStateFromLocalStorage() {
   try {
@@ -48,7 +48,7 @@ export function loadAppStateFromLocalStorage() {
 }
 
 /**
- * If Firestore has no clients and no bills but this browser still has real data in
+ * If remote storage has no clients and no bills but this browser still has real data in
  * localStorage, copy clients + bills from local so a half-migrated cloud doc is repaired.
  */
 export function mergeLocalClientsAndBillsIfFirestoreEmpty(firestoreData) {

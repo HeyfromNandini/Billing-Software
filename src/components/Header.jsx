@@ -1,10 +1,42 @@
 import { Link, useParams } from 'react-router-dom'
+import { useApp } from '../context/AppContext'
 
 const APP_NAME = 'Deva lifters'
 
 export default function Header({ companyName, backTo }) {
   const { companyId: routeCompanyId } = useParams()
+  const {
+    useGoogleSheets,
+    sheetsConnectionError,
+    clearSheetsConnectionError,
+    googleSyncSetupWarnings,
+  } = useApp()
+
   return (
+    <>
+      {googleSyncSetupWarnings?.length ? (
+        <div className="billing-setup-banner" role="status">
+          <div className="billing-setup-banner-inner">
+            <strong className="billing-setup-banner-title">Google Sheets — setup</strong>
+            <ul className="billing-setup-banner-list">
+              {googleSyncSetupWarnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      ) : null}
+      {useGoogleSheets && sheetsConnectionError ? (
+        <div className="sheets-connection-banner" role="alert">
+          <div className="sheets-connection-banner-inner">
+            <strong className="sheets-connection-banner-title">Google Sheets (billing API)</strong>
+            <pre className="sheets-connection-banner-pre">{sheetsConnectionError}</pre>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={clearSheetsConnectionError}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
     <header className="header">
       <button type="button" className="menu-btn" aria-label="Open menu">
         <span /><span /><span />
@@ -40,5 +72,6 @@ export default function Header({ companyName, backTo }) {
         </Link>
       </nav>
     </header>
+    </>
   )
 }
