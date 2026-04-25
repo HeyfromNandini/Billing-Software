@@ -12,6 +12,7 @@ const emptyForm = {
   to: DEFAULT_ROUTE.to,
   weight: '',
   rate: '',
+  total: '',
   advance: 0,
   custom: {},
 }
@@ -34,18 +35,27 @@ export default function EntryModal({ isOpen, editingEntry, customColumns = [], d
         to: editingEntry.to || to,
         weight: editingEntry.weight ?? '',
         rate: editingEntry.rate ?? '',
+        total: editingEntry.total ?? editingEntry.rate ?? '',
         advance: editingEntry.advance ?? 0,
         custom: Object.keys(custom).length ? custom : (customColumns || []).reduce((acc, col) => ({ ...acc, [col.id]: '' }), {}),
       })
     } else {
       const initial = { ...emptyForm, from, to }
-      setEntryRateType('fixed')
-      const fixedRate = rateFixed != null ? rateFixed : 0
-      initial.rate = fixedRate
       initial.custom = (customColumns || []).reduce((acc, col) => ({ ...acc, [col.id]: '' }), {})
+      if (rateType === 'variable' && rateRule) {
+        setEntryRateType('variable')
+        const ept = Number(rateRule.rate_extra_per_ton)
+        initial.rate = Number.isFinite(ept) ? ept : ''
+        initial.total = ''
+      } else {
+        setEntryRateType('fixed')
+        const fixedRate = rateFixed != null ? rateFixed : 0
+        initial.rate = fixedRate
+        initial.total = fixedRate
+      }
       setForm(initial)
     }
-  }, [isOpen, editingEntry?.id, from, to, rateFixed])
+  }, [isOpen, editingEntry?.id, from, to, rateFixed, rateType, rateRule])
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -54,13 +64,17 @@ export default function EntryModal({ isOpen, editingEntry, customColumns = [], d
       setForm((prev) => ({ ...prev, custom: { ...(prev.custom || {}), [colId]: value } }))
       return
     }
-    const isNum = name === 'advance' || name === 'weight'
+    const isNum = name === 'advance' || name === 'weight' || name === 'rate' || name === 'total'
     const parsed = isNum ? (value === '' ? '' : Number(value)) : value
     setForm((prev) => {
       const next = { ...prev, [name]: parsed }
       if (name === 'weight' && entryRateType === 'variable' && rateRule && (parsed !== '' || parsed === 0)) {
         const calculated = calculateRateFromWeight(parsed, rateRule)
-        if (calculated != null) next.rate = calculated
+        if (calculated != null) {
+          next.total = calculated
+          const ept = Number(rateRule.rate_extra_per_ton)
+          if (Number.isFinite(ept)) next.rate = ept
+        }
       }
       return next
     })
@@ -70,29 +84,41 @@ export default function EntryModal({ isOpen, editingEntry, customColumns = [], d
     setEntryRateType(type)
     setForm((prev) => {
       if (type === 'fixed') {
-        return { ...prev, rate: rateFixed != null ? rateFixed : 0 }
+        const r = rateFixed != null ? rateFixed : 0
+        return { ...prev, rate: r, total: r }
       }
       if (type === 'variable' && rateRule && (prev.weight !== '' || prev.weight === 0)) {
         const calculated = calculateRateFromWeight(prev.weight, rateRule)
-        return { ...prev, rate: calculated != null ? calculated : 0 }
+        const t = calculated != null ? calculated : 0
+        const ept = Number(rateRule.rate_extra_per_ton)
+        const r = Number.isFinite(ept) ? ept : 0
+        return { ...prev, rate: r, total: t }
       }
-      return { ...prev, rate: 0 }
+      if (type === 'variable' && rateRule) {
+        const ept = Number(rateRule.rate_extra_per_ton)
+        const r = Number.isFinite(ept) ? ept : 0
+        return { ...prev, rate: r, total: prev.total }
+      }
+      return { ...prev, rate: 0, total: 0 }
     })
   }
 
   const displayedRate =
     entryRateType === 'fixed'
       ? (rateFixed != null ? rateFixed : 0)
-      : rateRule && (form.weight !== '' || form.weight === 0)
-        ? (calculateRateFromWeight(form.weight, rateRule) ?? '—')
+      : rateRule
+        ? (Number(form.rate) || Number(rateRule.rate_extra_per_ton) || '—')
         : '—'
 
   const handleSubmit = (e) => {
     e.preventDefault()
     let rate = Number(form.rate) || 0
     if (entryRateType === 'variable' && rateRule && (form.weight === '' || form.weight == null)) {
-      rate = 0
+      const ept = Number(rateRule.rate_extra_per_ton)
+      rate = Number.isFinite(ept) ? ept : rate
     }
+    const totalNum =
+      form.total === '' || form.total == null ? rate : Number(form.total) || 0
     const payload = {
       ...form,
       vehicle_number: (form.vehicle_number || '').trim(),
@@ -101,6 +127,7 @@ export default function EntryModal({ isOpen, editingEntry, customColumns = [], d
       to: (form.to || '').trim(),
       weight: Number(form.weight) || 0,
       rate,
+      total: totalNum,
       advance: Number(form.advance) || 0,
       custom: form.custom || {},
     }
@@ -176,6 +203,18 @@ export default function EntryModal({ isOpen, editingEntry, customColumns = [], d
                 </label>
               </div>
               <span className="entry-rate-display">₹ {typeof displayedRate === 'number' ? displayedRate.toLocaleString('en-IN') : displayedRate}</span>
+            </label>
+            <label>
+              <span>Total (freight ₹)</span>
+              <input
+                type="number"
+                name="total"
+                min={0}
+                step={1}
+                value={form.total === '' || form.total == null ? '' : form.total}
+                onChange={handleChange}
+                placeholder="Trip amount"
+              />
             </label>
             <label>
               <span>Advance (₹)</span>

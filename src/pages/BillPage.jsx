@@ -9,6 +9,7 @@ import TotalsBlock from '../components/TotalsBlock'
 import EntryModal from '../components/EntryModal'
 import VehicleCombobox from '../components/VehicleCombobox'
 import { COMMON_TO_DESTINATIONS } from '../data/routeDestinations'
+import { companyStampSrc, fetchStampDataUrlForPdf } from '../data/companyStamps'
 import {
   grandTotal,
   formatDate,
@@ -17,6 +18,9 @@ import {
   reorderEntriesByIndex,
   parseBillDate,
   displayBillHeaderRouteTo,
+  rateBaseWeightKgFromStored,
+  displayEntryRate,
+  entryHasNumericRate,
 } from '../utils/billing'
 import { isDriveLayoutConfigured, companySpreadsheetId } from '../sheets/config'
 import { getSpreadsheetMeta, readBillSheet } from '../sheets/driveLayout'
@@ -27,7 +31,32 @@ import {
 } from '../sheets/billSheetRows'
 import { flushBillToDriveNow, queueBillDriveSyncWithBill } from '../sheets/billDriveSync'
 
-const ROWS_PER_PAGE = 15
+const ROWS_PER_PAGE = 12
+
+/** html2canvas runs before async <img> loads — PDF stamp would be blank without this. */
+function waitForImagesLoaded(container) {
+  const imgs = container.querySelectorAll('img')
+  if (!imgs.length) return Promise.resolve()
+  return Promise.all(
+    Array.from(imgs).map(
+      (img) =>
+        new Promise((resolve) => {
+          if (img.complete && img.naturalWidth > 0) {
+            resolve()
+            return
+          }
+          const finish = () => {
+            img.removeEventListener('load', finish)
+            img.removeEventListener('error', finish)
+            resolve()
+          }
+          img.addEventListener('load', finish)
+          img.addEventListener('error', finish)
+          setTimeout(finish, 12000)
+        })
+    )
+  )
+}
 
 let nextEntryId = 1000
 
@@ -38,10 +67,18 @@ function normalizeVehicleToken(s) {
     .trim()
 }
 
+/** Vehicle matching helper that ignores spaces, dashes, and punctuation. */
+function normalizeVehicleCompactToken(s) {
+  return String(s ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+    .trim()
+}
+
 /** Comma, semicolon, or newline — show row if vehicle matches any token (substring, case-insensitive). */
 function parseVehicleFilterTokens(filterRaw) {
   return String(filterRaw ?? '')
-    .split(/[,;\n]+/)
+    .split(/[,;|/\n]+/)
     .map((t) => normalizeVehicleToken(t))
     .filter(Boolean)
 }
@@ -49,8 +86,13 @@ function parseVehicleFilterTokens(filterRaw) {
 function entryMatchesVehicleFilter(entry, filterRaw) {
   const tokens = parseVehicleFilterTokens(filterRaw)
   if (tokens.length === 0) return true
-  const v = normalizeVehicleToken(entry.vehicle_number)
-  return tokens.some((q) => v.includes(q))
+  const vehicleLoose = normalizeVehicleToken(entry.vehicle_number)
+  const vehicleCompact = normalizeVehicleCompactToken(entry.vehicle_number)
+  return tokens.some((q) => {
+    if (vehicleLoose.includes(q)) return true
+    const qCompact = normalizeVehicleCompactToken(q)
+    return qCompact && vehicleCompact.includes(qCompact)
+  })
 }
 
 function filterBillEntriesByVehicle(entries, vehicleFilter) {
@@ -76,10 +118,10 @@ function compareEntriesByInvoice(a, b, direction) {
   if (sa === '' && sb === '') return 0
   if (sa === '') return 1
   if (sb === '') return -1
-  const na = parseInt(sa, 10)
-  const nb = parseInt(sb, 10)
-  const aNum = Number.isFinite(na) && String(na) === sa
-  const bNum = Number.isFinite(nb) && String(nb) === sb
+  const aNum = /^-?\d+$/.test(sa)
+  const bNum = /^-?\d+$/.test(sb)
+  const na = aNum ? Number(sa) : NaN
+  const nb = bNum ? Number(sb) : NaN
   let cmp
   if (aNum && bNum) cmp = na - nb
   else cmp = sa.localeCompare(sb, undefined, { numeric: true, sensitivity: 'base' })
@@ -106,7 +148,7 @@ function applyTableSorts(entries, dateSort, invoiceSort) {
 const defaultRateRule = {
   rate_type: 'variable',
   rate_fixed: 7500,
-  rate_base_weight: 27.273,
+  rate_base_weight: 27273,
   rate_base_amount: 7500,
   rate_extra_per_ton: 275,
 }
@@ -163,6 +205,11 @@ export default function BillPage() {
     () => applyTableSorts(vehicleFilteredEntries, dateSort, invoiceSort),
     [vehicleFilteredEntries, dateSort, invoiceSort]
   )
+  const rateColumnFallback = useMemo(
+    () => String(rateVariable.rate_extra_per_ton ?? '').trim(),
+    [rateVariable.rate_extra_per_ton]
+  )
+
   const vehicleDatalistOptions = useMemo(() => {
     const set = new Set()
     for (const e of entries) {
@@ -172,6 +219,8 @@ export default function BillPage() {
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
   }, [entries])
   const totalAmount = grandTotal(filteredEntries)
+  const stampCompany = (bill?.company_id && getCompany(bill.company_id)) || company
+  const stampSrc = companyStampSrc(stampCompany?.id, stampCompany)
 
   billRef.current = bill
   clientRef.current = client
@@ -258,12 +307,22 @@ export default function BillPage() {
       setRateType(bill.rate_type ?? defaultRateRule.rate_type)
       setRateFixed(bill.rate_fixed ?? defaultRateRule.rate_fixed)
       setRateVariable({
-        rate_base_weight: bill.rate_base_weight ?? defaultRateRule.rate_base_weight,
+        rate_base_weight:
+          bill.rate_base_weight != null && bill.rate_base_weight !== ''
+            ? rateBaseWeightKgFromStored(bill.rate_base_weight)
+            : defaultRateRule.rate_base_weight,
         rate_base_amount: bill.rate_base_amount ?? defaultRateRule.rate_base_amount,
         rate_extra_per_ton: bill.rate_extra_per_ton ?? defaultRateRule.rate_extra_per_ton,
       })
     }
-  }, [bill?.id, bill?.rate_type, bill?.rate_fixed, bill?.rate_base_weight, bill?.rate_base_amount, bill?.rate_extra_per_ton])
+  }, [
+    bill?.id,
+    bill?.rate_type,
+    bill?.rate_fixed,
+    bill?.rate_base_weight,
+    bill?.rate_base_amount,
+    bill?.rate_extra_per_ton,
+  ])
 
   const startBillInfoEdit = useCallback(() => {
     if (!bill) return
@@ -435,7 +494,7 @@ export default function BillPage() {
 
   const handleExportPdf = useCallback(() => {
     if (!company || !bill) return
-    import('html2pdf.js').then(({ default: html2pdf }) => {
+    import('html2pdf.js').then(async ({ default: html2pdf }) => {
       const pdfLayout = buildPdfColumnLayout(customColumns)
       const all = bill.entries ?? []
       const base = filterBillEntriesByVehicle(all, vehicleFilter)
@@ -445,8 +504,8 @@ export default function BillPage() {
         chunks.push(entriesList.slice(i, i + ROWS_PER_PAGE))
       }
       if (chunks.length === 0) chunks.push([])
-      const totalGrand = grandTotal(entriesList)
-
+      const grandTotalBalance = grandTotal(entriesList)
+      const grandTotalFreight = entriesList.reduce((acc, r) => acc + rowTotal(r), 0)
       const renderFixedCell = (row, index, key) => {
         const tot = rowTotal(row)
         const bal = rowBalance(row)
@@ -459,7 +518,7 @@ export default function BillPage() {
           case 5: return row.from || '—'
           case 6: return row.to || '—'
           case 7: return row.weight ?? '—'
-          case 8: return row.rate ?? '—'
+          case 8: return displayEntryRate(row, rateColumnFallback)
           case 9: return tot
           case 10: return advanceStr
           case 11: return bal
@@ -488,6 +547,7 @@ export default function BillPage() {
         .pdf-bill-root .table-scroll { overflow: visible !important; width: 100% !important; margin: 0 !important; }
         .pdf-bill-root .transport-table { width: 100% !important; table-layout: fixed !important; font-size: 11px !important; border-collapse: collapse; }
         .pdf-bill-root .transport-table th, .pdf-bill-root .transport-table td { padding: 5px 6px !important; box-sizing: border-box; border-bottom: 1px solid #ccc; text-align: center !important; }
+        .pdf-bill-root .transport-table td.pdf-rate-cell-display-text { white-space: pre-wrap !important; text-align: center !important; line-height: 1.25 !important; }
         .pdf-bill-root .transport-table th.col-sr-no, .pdf-bill-root .transport-table td.col-sr-no { width: 3.25rem !important; min-width: 3.25rem !important; max-width: 3.25rem !important; }
         .pdf-bill-root .transport-table th { font-weight: 600; background: #f5f5f5; }
         .pdf-bill-root .transport-table .num { text-align: center !important; }
@@ -495,8 +555,37 @@ export default function BillPage() {
         .pdf-bill-root .transport-table tr.pdf-grand-total-row td { font-weight: 700; border-top: 2px solid #111; padding-top: 8px !important; font-size: 0.95rem !important; }
         .pdf-bill-root .transport-table tr.pdf-grand-total-row td.grand-total-label-cell { white-space: nowrap !important; min-width: 5rem !important; width: auto !important; max-width: none !important; color: #0d6e2e !important; }
         .pdf-bill-root .transport-table tr.pdf-grand-total-row td.grand-total-value-cell { color: #0d6e2e !important; }
-        .pdf-bill-root .pdf-sign-stamp-block { margin-top: 2.5rem !important; text-align: right !important; padding-right: 0.5rem !important; }
-        .pdf-bill-root .pdf-sign-stamp-inner { display: inline-block; font-size: 0.75rem !important; color: #666 !important; border: 1px solid #ccc !important; padding: 0.5rem 1.5rem !important; min-width: 8rem !important; text-align: center !important; }
+        .pdf-bill-root .pdf-sign-stamp-block {
+          margin-top: 0.35rem !important;
+          padding-top: 0 !important;
+          text-align: right !important;
+          padding-right: 2.25rem !important;
+          page-break-inside: avoid !important;
+          break-inside: avoid !important;
+          -webkit-column-break-inside: avoid !important;
+        }
+        .pdf-bill-root .pdf-sign-stamp-inner {
+          display: inline-block;
+          font-size: 0.75rem !important;
+          color: #666 !important;
+          border: 1px solid #ccc !important;
+          padding: 0.5rem 1.5rem !important;
+          min-width: 8rem !important;
+          text-align: center !important;
+          page-break-inside: avoid !important;
+          break-inside: avoid !important;
+        }
+        .pdf-bill-root .pdf-sign-stamp-inner--stamp { border: none !important; padding: 0 !important; min-width: 0 !important; }
+        .pdf-bill-root .pdf-company-stamp {
+          display: block;
+          max-height: 20mm !important;
+          max-width: 48mm !important;
+          width: auto !important;
+          height: auto !important;
+          object-fit: contain !important;
+          page-break-inside: avoid !important;
+          break-inside: avoid !important;
+        }
       `
       root.appendChild(pdfStyles)
 
@@ -508,6 +597,15 @@ export default function BillPage() {
 
       const billDateDisplay = bill.bill_date ? bill.bill_date.replace(/-/g, '.') : '—'
       const phones = [company.phone_1, company.phone_2].filter(Boolean).join(' / ')
+
+      const pdfStampCompany = (bill?.company_id && getCompany(bill.company_id)) || company
+      const stampPathForPdf = companyStampSrc(pdfStampCompany?.id, pdfStampCompany)
+      let stampPdfSrc = null
+      if (stampPathForPdf) {
+        stampPdfSrc =
+          (await fetchStampDataUrlForPdf(stampPathForPdf)) ||
+          new URL(stampPathForPdf, window.location.href).href
+      }
 
       chunks.forEach((chunk, pageIndex) => {
         const pageDiv = document.createElement('div')
@@ -558,7 +656,11 @@ export default function BillPage() {
             } else {
               const val = renderFixedCell(row, globalIndex, item.index)
               td.textContent = val
-              td.className = [1, 7, 8, 9, 10, 11].includes(item.index) ? 'num' : ''
+              let cellClass = [1, 7, 8, 9, 10, 11].includes(item.index) ? 'num' : ''
+              if (item.index === 8 && rateColumnFallback && !entryHasNumericRate(row)) {
+                cellClass += ' pdf-rate-cell-display-text'
+              }
+              td.className = cellClass
               if (item.index === 1) td.className += ' col-sr-no'
             }
             tr.appendChild(td)
@@ -566,13 +668,15 @@ export default function BillPage() {
           tbody.appendChild(tr)
         })
 
-        const pageTotal = chunk.reduce((sum, r) => sum + rowTotal(r), 0)
+        const pageTotalFreight = chunk.reduce((sum, r) => sum + rowTotal(r), 0)
+        const pageTotalBalance = chunk.reduce((sum, r) => sum + rowBalance(r), 0)
         const totalRow = document.createElement('tr')
         totalRow.className = 'pdf-page-total'
         pdfLayout.forEach((item) => {
           const td = document.createElement('td')
           if (item.type === 'fixed' && item.index === 1) { td.textContent = 'Total'; td.className = 'col-sr-no' }
-          else if (item.type === 'fixed' && (item.index === 9 || item.index === 11)) { td.textContent = pageTotal.toLocaleString('en-IN'); td.className = 'num' }
+          else if (item.type === 'fixed' && item.index === 9) { td.textContent = pageTotalFreight.toLocaleString('en-IN'); td.className = 'num' }
+          else if (item.type === 'fixed' && item.index === 11) { td.textContent = pageTotalBalance.toLocaleString('en-IN'); td.className = 'num' }
           else td.textContent = ''
           totalRow.appendChild(td)
         })
@@ -585,7 +689,8 @@ export default function BillPage() {
           pdfLayout.forEach((item) => {
             const td = document.createElement('td')
             if (item.type === 'fixed' && item.index === 1) { td.textContent = 'Grand Total'; td.className = 'grand-total-label-cell' }
-            else if (item.type === 'fixed' && (item.index === 9 || item.index === 11)) { td.textContent = totalGrand.toLocaleString('en-IN'); td.className = 'num grand-total-value-cell' }
+            else if (item.type === 'fixed' && item.index === 9) { td.textContent = grandTotalFreight.toLocaleString('en-IN'); td.className = 'num grand-total-value-cell' }
+            else if (item.type === 'fixed' && item.index === 11) { td.textContent = grandTotalBalance.toLocaleString('en-IN'); td.className = 'num grand-total-value-cell' }
             else td.textContent = ''
             grandRow.appendChild(td)
           })
@@ -597,12 +702,23 @@ export default function BillPage() {
         tableBlock.appendChild(tableScroll)
         pageDiv.appendChild(tableBlock)
 
-        if (isLastPage) {
-          const signStampBlock = document.createElement('div')
-          signStampBlock.className = 'pdf-sign-stamp-block'
-          signStampBlock.innerHTML = '<div class="pdf-sign-stamp-inner">Sign & Stamp</div>'
-          pageDiv.appendChild(signStampBlock)
+        const signStampBlock = document.createElement('div')
+        signStampBlock.className = 'pdf-sign-stamp-block'
+        const inner = document.createElement('div')
+        inner.className = stampPathForPdf
+          ? 'pdf-sign-stamp-inner pdf-sign-stamp-inner--stamp'
+          : 'pdf-sign-stamp-inner'
+        if (stampPathForPdf && stampPdfSrc) {
+          const img = document.createElement('img')
+          img.className = 'pdf-company-stamp'
+          img.alt = ''
+          img.src = stampPdfSrc
+          inner.appendChild(img)
+        } else {
+          inner.textContent = 'Sign & Stamp'
         }
+        signStampBlock.appendChild(inner)
+        pageDiv.appendChild(signStampBlock)
 
         root.appendChild(pageDiv)
       })
@@ -611,24 +727,36 @@ export default function BillPage() {
       wrapper.style.cssText = 'position:fixed;left:-9999px;top:0;width:1060px;box-sizing:border-box;'
       wrapper.appendChild(root)
       document.body.appendChild(wrapper)
+      await waitForImagesLoaded(wrapper)
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
 
       const companyName = (company.company_name || '').replace(/[/\\:*?"<>|]/g, '').trim() || 'Bill'
       const billNo = bill.bill_number || 'bill'
       const filename = `${companyName} ${billNo}.pdf`
-      html2pdf()
-        .set({
-          margin: 3,
-          filename,
-          image: { type: 'jpeg', quality: 0.98 },
-          html2canvas: { scale: 1.65, useCORS: true },
-          jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
-        })
-        .from(root)
-        .save()
-        .then(() => { wrapper.remove() })
-        .catch(() => { wrapper.remove() })
+      try {
+        await html2pdf()
+          .set({
+            margin: 3,
+            filename,
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: {
+              scale: 1.65,
+              useCORS: true,
+              logging: false,
+            },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
+            pagebreak: {
+              mode: ['css', 'legacy'],
+              avoid: ['.pdf-sign-stamp-block', '.pdf-sign-stamp-inner', '.pdf-company-stamp'],
+            },
+          })
+          .from(root)
+          .save()
+      } finally {
+        wrapper.remove()
+      }
     })
-  }, [bill, company, customColumns, vehicleFilter, dateSort, invoiceSort])
+  }, [bill, company, customColumns, vehicleFilter, dateSort, invoiceSort, rateColumnFallback, getCompany])
 
   const handleRateRuleSave = useCallback(
     (e) => {
@@ -639,6 +767,7 @@ export default function BillPage() {
         rate_base_weight: rateVariable.rate_base_weight,
         rate_base_amount: rateVariable.rate_base_amount,
         rate_extra_per_ton: rateVariable.rate_extra_per_ton,
+        pdf_rate_column_text: '',
       })
     },
     [billId, touchLocalAndUpdateBill, rateType, rateFixed, rateVariable]
@@ -910,6 +1039,8 @@ export default function BillPage() {
                 rateType={rateType}
                 rateFixed={rateFixed}
                 rateRule={billRateRule}
+                rateColumnFallback={rateColumnFallback}
+                extraPerTonRaw={rateVariable.rate_extra_per_ton}
               />
               <TotalsBlock
                 grandTotal={totalAmount}
@@ -917,18 +1048,24 @@ export default function BillPage() {
                 onExportPdf={handleExportPdf}
               />
               <div className="sign-stamp-block">
-                <div className="sign-stamp-inner">Sign & Stamp</div>
+                <div className={stampSrc ? 'sign-stamp-inner sign-stamp-inner--stamp' : 'sign-stamp-inner'}>
+                  {stampSrc ? (
+                    <img className="company-stamp-img" src={stampSrc} alt="" />
+                  ) : (
+                    'Sign & Stamp'
+                  )}
+                </div>
               </div>
             </div>
           </section>
 
           <aside className="bill-sidebar no-print" aria-label="Rate rules for this bill">
             <div className="bill-sidebar-inner">
-              <h3 className="bill-sidebar-title">Rate rules (this bill)</h3>
-              <p className="rate-rules-hint">
-                Used when adding entries. Not shown on PDF.
-              </p>
               <form onSubmit={handleRateRuleSave} className="card rate-rules-card">
+                <h3 className="bill-sidebar-title">Rate rules (this bill)</h3>
+                <p className="rate-rules-hint">
+                  Extra per ton (₹) is the default for new trips and for rows with no rate. Click Edit on a row to set or change Rate for that trip, then Save.
+                </p>
                 <div className="rate-type-options">
                   <label className="rate-type-option">
                     <input
@@ -967,7 +1104,7 @@ export default function BillPage() {
                 ) : (
                   <div className="rate-rules-grid">
                     <label>
-                      <span>Base weight (tons)</span>
+                      <span>Base weight (kg)</span>
                       <input
                         type="number"
                         min={0}

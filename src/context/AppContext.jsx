@@ -233,9 +233,10 @@ export function AppProvider({ children }) {
         entries: bill.entries ?? [],
         rate_type: bill.rate_type ?? 'variable',
         rate_fixed: bill.rate_fixed ?? 7500,
-        rate_base_weight: bill.rate_base_weight ?? 27.273,
+        rate_base_weight: bill.rate_base_weight ?? 27273,
         rate_base_amount: bill.rate_base_amount ?? 7500,
         rate_extra_per_ton: bill.rate_extra_per_ton ?? 275,
+        pdf_rate_column_text: bill.pdf_rate_column_text ?? '',
       }
       queueBillDriveSyncWithBill(newBill)
       return [...prev, newBill]

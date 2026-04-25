@@ -94,6 +94,7 @@ export function importBillFromGrid(values, client) {
     rate_base_weight: billPatch.rate_base_weight,
     rate_base_amount: billPatch.rate_base_amount,
     rate_extra_per_ton: billPatch.rate_extra_per_ton,
+    pdf_rate_column_text: billPatch.pdf_rate_column_text,
   })
 
   const warnings = []

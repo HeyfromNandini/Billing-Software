@@ -1,8 +1,28 @@
 import { useState, useEffect } from 'react'
 import { DEFAULT_ROUTE } from '../data/sampleEntries'
-import { calculateRateFromWeight, rowTotal, rowBalance } from '../utils/billing'
+import { calculateRateFromWeight, entryTripTotal, rowBalance } from '../utils/billing'
 import VehicleCombobox from './VehicleCombobox'
 import { COMMON_TO_DESTINATIONS } from '../data/routeDestinations'
+
+/** Parse stored or typed numeric cell values; avoids NaN breaking controlled number inputs. */
+function coerceNumericField(raw) {
+  if (raw === '' || raw == null) return ''
+  const n = Number(String(raw).replace(/,/g, '').trim())
+  return Number.isFinite(n) ? n : ''
+}
+
+function initialRateForEdit(entry, rateColumnFallback, extraPerTonRaw) {
+  const r = coerceNumericField(entry?.rate)
+  if (r !== '') return r
+  if (extraPerTonRaw !== undefined && extraPerTonRaw !== '' && extraPerTonRaw != null) {
+    if (typeof extraPerTonRaw === 'number' && Number.isFinite(extraPerTonRaw)) return extraPerTonRaw
+    const fromExtra = coerceNumericField(extraPerTonRaw)
+    if (fromExtra !== '') return fromExtra
+  }
+  const t = String(rateColumnFallback ?? '').trim()
+  if (!t) return ''
+  return coerceNumericField(t)
+}
 
 export default function EditableEntryRow({
   entry,
@@ -14,6 +34,8 @@ export default function EditableEntryRow({
   rateType,
   rateFixed,
   rateRule,
+  rateColumnFallback = '',
+  extraPerTonRaw,
   onSave,
   onCancel,
 }) {
@@ -28,6 +50,7 @@ export default function EditableEntryRow({
     to,
     weight: '',
     rate: '',
+    total: '',
     advance: 0,
     custom: {},
   })
@@ -46,11 +69,20 @@ export default function EditableEntryRow({
       from: entry.from || from,
       to: entry.to || to,
       weight: entry.weight ?? '',
-      rate: entry.rate ?? '',
+      rate: initialRateForEdit(entry, rateColumnFallback, extraPerTonRaw),
+      total: coerceNumericField(entry.total ?? entry.rate),
       advance: entry.advance ?? 0,
       custom: Object.keys(custom).length ? custom : (customColumns || []).reduce((acc, col) => ({ ...acc, [col.id]: '' }), {}),
     })
   }, [entryId])
+
+  const handleBalanceChange = (e) => {
+    const raw = e.target.value
+    const b = raw === '' ? 0 : Number(raw)
+    if (Number.isNaN(b)) return
+    const trip = entryTripTotal({ rate: form.rate, total: form.total })
+    setForm((prev) => ({ ...prev, advance: Math.max(0, trip - b) }))
+  }
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -59,13 +91,28 @@ export default function EditableEntryRow({
       setForm((prev) => ({ ...prev, custom: { ...(prev.custom || {}), [colId]: value } }))
       return
     }
-    const isNum = name === 'advance' || name === 'rate' || name === 'weight'
-    const parsed = isNum ? (value === '' ? '' : Number(value)) : value
+    const isNum = name === 'advance' || name === 'rate' || name === 'total' || name === 'weight'
+    let parsed
+    if (isNum) {
+      if (value === '') {
+        parsed = ''
+      } else {
+        const n = Number(String(value).replace(/,/g, '').trim())
+        if (!Number.isFinite(n)) return
+        parsed = n
+      }
+    } else {
+      parsed = value
+    }
     setForm((prev) => {
       const next = { ...prev, [name]: parsed }
       if (name === 'weight' && rateType === 'variable' && rateRule && (parsed !== '' || parsed === 0)) {
         const calculated = calculateRateFromWeight(parsed, rateRule)
-        if (calculated != null) next.rate = calculated
+        if (calculated != null) {
+          next.total = calculated
+          const ept = Number(rateRule.rate_extra_per_ton)
+          if (Number.isFinite(ept)) next.rate = ept
+        }
       }
       return next
     })
@@ -73,6 +120,9 @@ export default function EditableEntryRow({
 
   const handleSubmit = (e) => {
     e.preventDefault()
+    const rateNum = Number(form.rate) || 0
+    const totalNum =
+      form.total === '' || form.total == null ? rateNum : Number(form.total) || 0
     const payload = {
       date: form.date,
       vehicle_number: (form.vehicle_number || '').trim(),
@@ -80,7 +130,8 @@ export default function EditableEntryRow({
       from: (form.from || '').trim(),
       to: (form.to || '').trim(),
       weight: Number(form.weight) || 0,
-      rate: Number(form.rate) || 0,
+      rate: rateNum,
+      total: totalNum,
       advance: Number(form.advance) || 0,
       custom: form.custom || {},
     }
@@ -88,10 +139,10 @@ export default function EditableEntryRow({
   }
 
   const rowData = {
-    rate: Number(form.rate) || 0,
+    rate: form.rate,
+    total: form.total,
     advance: Number(form.advance) || 0,
   }
-  const tot = rowTotal(rowData)
   const bal = rowBalance(rowData)
 
   const renderFixedCell = (key) => {
@@ -124,10 +175,50 @@ export default function EditableEntryRow({
         </td>
       )
       case 7: return <td key="fixed-7" className="num"><input type="number" name="weight" min={0} step={1} value={form.weight === '' || form.weight == null ? '' : form.weight} onChange={handleChange} className="cell-input num" aria-label="Weight" /></td>
-      case 8: return <td key="fixed-8" className="num"><input type="number" name="rate" min={0} step={1} value={form.rate === '' || form.rate == null ? '' : form.rate} onChange={handleChange} required className="cell-input num" aria-label="Rate" /></td>
-      case 9: return <td key="fixed-9" className="num">{tot}</td>
+      case 8: return (
+        <td key="fixed-8" className="num col-rate">
+          <input
+            type="number"
+            name="rate"
+            min={0}
+            step={1}
+            value={form.rate === '' || form.rate == null ? '' : form.rate}
+            onChange={handleChange}
+            required
+            className="cell-input num cell-rate-input"
+            aria-label="Rate"
+          />
+        </td>
+      )
+      case 9: return (
+        <td key="fixed-9" className="num">
+          <input
+            type="number"
+            name="total"
+            min={0}
+            step={1}
+            value={form.total === '' || form.total == null ? '' : form.total}
+            onChange={handleChange}
+            required
+            className="cell-input num"
+            aria-label="Total"
+          />
+        </td>
+      )
       case 10: return <td key="fixed-10" className="num"><input type="number" name="advance" min={0} step={1} value={form.advance === '' || form.advance == null ? '' : form.advance} onChange={handleChange} className="cell-input num" aria-label="Advance" /></td>
-      case 11: return <td key="fixed-11" className="num">{bal}</td>
+      case 11: return (
+        <td key="fixed-11" className="num">
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={bal}
+            onChange={handleBalanceChange}
+            className="cell-input num"
+            aria-label="Balance"
+          />
+        </td>
+      )
       default: return <td key={`fixed-${key}`}>—</td>
     }
   }
@@ -159,10 +250,36 @@ export default function EditableEntryRow({
           />
         </td>
         <td className="num"><input type="number" name="weight" min={0} step={1} value={form.weight === '' || form.weight == null ? '' : form.weight} onChange={handleChange} className="cell-input num" /></td>
-        <td className="num"><input type="number" name="rate" min={0} step={1} value={form.rate === '' || form.rate == null ? '' : form.rate} onChange={handleChange} required className="cell-input num" /></td>
-        <td className="num">{tot}</td>
-        <td className="num"><input type="number" name="advance" min={0} step={1} value={form.advance === '' || form.advance == null ? '' : form.advance} onChange={handleChange} className="cell-input num" /></td>
-        <td className="num">{bal}</td>
+        <td className="num col-rate">
+          <input
+            type="number"
+            name="rate"
+            min={0}
+            step={1}
+            value={form.rate === '' || form.rate == null ? '' : form.rate}
+            onChange={handleChange}
+            required
+            className="cell-input num cell-rate-input"
+            aria-label="Rate"
+          />
+        </td>
+        <td className="num">
+          <input
+            type="number"
+            name="total"
+            min={0}
+            step={1}
+            value={form.total === '' || form.total == null ? '' : form.total}
+            onChange={handleChange}
+            required
+            className="cell-input num"
+            aria-label="Total"
+          />
+        </td>
+        <td className="num"><input type="number" name="advance" min={0} step={1} value={form.advance === '' || form.advance == null ? '' : form.advance} onChange={handleChange} className="cell-input num" aria-label="Advance" /></td>
+        <td className="num">
+          <input type="number" min={0} step={1} value={bal} onChange={handleBalanceChange} className="cell-input num" aria-label="Balance" />
+        </td>
         {customColumns.map((col) => (
           <td key={col.id}><input type="text" name={`custom.${col.id}`} value={(form.custom && form.custom[col.id]) ?? ''} onChange={handleChange} className="cell-input" placeholder={col.name} /></td>
         ))}

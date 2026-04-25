@@ -28,11 +28,11 @@ export function mergeCompaniesWithDefaults(companies) {
   return [...ordered, ...extras]
 }
 
-/** Default rate rule per bill: variable with base 27.273 ton → ₹7500; above that, full weight × ₹275/ton. */
+/** Default rate rule per bill: variable with base 27273 kg → ₹7500; above that, ₹7500 + (extra tons × ₹275). */
 const DEFAULT_BILL_RATE_RULE = {
   rate_type: 'variable',
   rate_fixed: 7500,
-  rate_base_weight: 27.273,
+  rate_base_weight: 27273,
   rate_base_amount: 7500,
   rate_extra_per_ton: 275,
 }

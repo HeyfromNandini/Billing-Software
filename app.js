@@ -83,7 +83,7 @@
 
   function renderTable() {
     tbody.innerHTML = entries.map((row, i) => renderRow(row, i)).join('');
-    const sum = entries.reduce((acc, r) => acc + total(r), 0);
+    const sum = entries.reduce((acc, r) => acc + balance(r), 0);
     grandTotalEl.textContent = '₹ ' + sum.toLocaleString('en-IN');
 
     $$('.btn-edit', tbody).forEach(btn => {

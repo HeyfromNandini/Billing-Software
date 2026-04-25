@@ -1,5 +1,5 @@
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react'
-import { formatDate, rowTotal, rowBalance } from '../utils/billing'
+import { formatDate, rowTotal, rowBalance, displayEntryRate, entryHasNumericRate } from '../utils/billing'
 import EditableEntryRow from './EditableEntryRow'
 
 export const FIXED_HEADERS = [
@@ -47,8 +47,13 @@ export default function TransportTable({
   rateType,
   rateFixed,
   rateRule,
+  /** When a row has no saved rate, show this (Extra per ton from bill rules). */
+  rateColumnFallback = '',
+  /** Raw Extra per ton for seeding the rate field while editing a row. */
+  extraPerTonRaw,
 }) {
   const layout = useMemo(() => buildColumnLayout(customColumns), [customColumns])
+  const fallbackDisplay = String(rateColumnFallback ?? '').trim()
   const [draggingIndex, setDraggingIndex] = useState(null)
   const [dragOverIndex, setDragOverIndex] = useState(null)
   const pointerFromRef = useRef(null)
@@ -142,7 +147,7 @@ export default function TransportTable({
       case 5: return row.from || '—'
       case 6: return row.to || '—'
       case 7: return row.weight || '—'
-      case 8: return row.rate
+      case 8: return displayEntryRate(row, rateColumnFallback)
       case 9: return tot
       case 10: return advanceStr
       case 11: return bal
@@ -162,7 +167,7 @@ export default function TransportTable({
                 return (
                   <th
                     key={`fixed-${item.index}`}
-                    className={item.index === 1 ? 'col-sr-no' : ''}
+                    className={[item.index === 1 && 'col-sr-no', item.index === 8 && 'col-rate'].filter(Boolean).join(' ') || undefined}
                     title={item.index === 1 && canReorder ? 'Drag ⋮⋮ beside a row’s number to change order' : undefined}
                   >
                     {FIXED_HEADERS[item.index - 1]}
@@ -186,6 +191,8 @@ export default function TransportTable({
                     rateType={rateType}
                     rateFixed={rateFixed}
                     rateRule={rateRule}
+                    rateColumnFallback={rateColumnFallback}
+                    extraPerTonRaw={extraPerTonRaw}
                     onSave={onSaveEntry}
                     onCancel={onCancelEdit}
                   />
@@ -238,8 +245,20 @@ export default function TransportTable({
                       )
                     }
                     const val = renderFixedCell(row, index, item.index)
-                    const isNum = [1, 7, 8, 9, 10, 11].includes(item.index)
-                    const cn = [isNum && 'num', item.index === 1 && 'col-sr-no'].filter(Boolean).join(' ')
+                    const rateUsesPdfText =
+                      item.index === 8 &&
+                      Boolean(fallbackDisplay) &&
+                      !entryHasNumericRate(row)
+                    const isNum =
+                      [1, 7, 9, 10, 11].includes(item.index) || (item.index === 8 && !rateUsesPdfText)
+                    const cn = [
+                      isNum && 'num',
+                      item.index === 1 && 'col-sr-no',
+                      item.index === 8 && 'col-rate',
+                      rateUsesPdfText && 'rate-cell-pdf-text',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')
                     return <td key={`fixed-${item.index}`} className={cn || undefined}>{val}</td>
                   })}
                 </tr>

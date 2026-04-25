@@ -1,25 +1,66 @@
 /**
- * Total = Rate (flat per trip). Balance = Total - Advance.
- * Weight is stored in kg.
- * Variable rule: up to base_weight (tons) → base_rate (₹). If weight exceeds base, then full weight × extra_per_ton (e.g. 30 tons → 30 × 275).
+ * Trip freight uses `total` when present, else `rate` (legacy). Balance = trip total − Advance.
+ * Trip weight is stored in kg. Base weight in rules is stored in kg (same as trips); legacy bills may
+ * still have tons (e.g. 27.273 or whole 24) — see {@link rateBaseWeightKgFromStored}.
+ * Variable rule: up to base weight (kg) → base_rate (₹). Above base: base_rate + extra tons × extra_per_ton.
  */
+export function rateBaseWeightKgFromStored(raw) {
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return 0
+  if (n >= 1000) return n
+  if (n % 1 !== 0) return n * 1000
+  if (n <= 100) return n * 1000
+  return n
+}
+
+export function rateBaseWeightKg(rule) {
+  return rateBaseWeightKgFromStored(rule?.rate_base_weight)
+}
+
 export function calculateRateFromWeight(weightKg, rule) {
   if (!rule || weightKg == null || weightKg === '' || Number.isNaN(Number(weightKg))) return null
-  const wt = Number(weightKg) / 1000
-  const base = Number(rule.rate_base_weight)
+  const wtKg = Number(weightKg)
+  const baseKg = rateBaseWeightKg(rule)
   const baseRate = Number(rule.rate_base_amount)
   const extra = Number(rule.rate_extra_per_ton) || 0
-  if (baseRate === 0 && base === 0) return null
-  if (wt <= base) return Math.round(baseRate)
-  return Math.round(wt * extra)
+  if (baseRate === 0 && baseKg === 0) return null
+  if (wtKg <= baseKg) return Math.round(baseRate)
+  const extraTons = (wtKg - baseKg) / 1000
+  return Math.round(baseRate + extraTons * extra)
+}
+
+/** Freight amount for the row: uses `total` when set, otherwise `rate` (legacy rows). */
+export function entryTripTotal(row) {
+  const t = row?.total
+  if (t !== '' && t != null && Number.isFinite(Number(t))) return Number(t)
+  return Number(row?.rate) || 0
 }
 
 export function rowTotal(row) {
-  return row.rate ?? 0
+  return entryTripTotal(row)
 }
 
 export function rowBalance(row) {
-  return (row.rate ?? 0) - (row.advance ?? 0)
+  return entryTripTotal(row) - (Number(row.advance) || 0)
+}
+
+/** True when the row has a numeric value in `rate` (the Rate column), including 0. */
+export function entryHasNumericRate(row) {
+  const r = row?.rate
+  return r !== '' && r != null && Number.isFinite(Number(r))
+}
+
+/**
+ * Value for the Rate column: use the row’s stored `rate` when set; otherwise optional bill-level PDF text.
+ * Fallback text is usually “extra per ton” (₹) when the row has no numeric `rate`.
+ */
+export function displayEntryRate(row, rateColumnFallback = '', emptyPlaceholder = '—') {
+  if (entryHasNumericRate(row)) return row.rate
+  const fb = String(rateColumnFallback ?? '').trim()
+  if (fb) return fb
+  const r = row?.rate
+  if (r === '' || r == null) return emptyPlaceholder
+  return r
 }
 
 /**
@@ -31,6 +72,19 @@ export function parseBillDate(raw) {
   const s = String(raw).trim()
   if (!s) return null
 
+  const compact = s.replace(/\s+/g, '')
+  const cleaned = compact.replace(/[./-]+$/, '')
+
+  // Excel/Sheets serial date (days since 1899-12-30).
+  if (/^\d{4,6}$/.test(cleaned)) {
+    const serial = Number(cleaned)
+    if (Number.isFinite(serial) && serial >= 20000 && serial <= 80000) {
+      const epoch = new Date(1899, 11, 30, 12, 0, 0, 0)
+      const dt = new Date(epoch.getTime() + serial * 24 * 60 * 60 * 1000)
+      if (!Number.isNaN(dt.getTime())) return dt
+    }
+  }
+
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
     const [y, mo, d] = s.split('-').map((x) => parseInt(x, 10))
     if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return null
@@ -39,7 +93,7 @@ export function parseBillDate(raw) {
     return dt
   }
 
-  const m = s.match(/^(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?$/)
+  const m = cleaned.match(/^(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?$/)
   if (m) {
     const d = parseInt(m[1], 10)
     const mo = parseInt(m[2], 10)
@@ -54,7 +108,7 @@ export function parseBillDate(raw) {
     return dt
   }
 
-  const t = Date.parse(s)
+  const t = Date.parse(cleaned)
   if (!Number.isFinite(t)) return null
   const dt = new Date(t)
   if (Number.isNaN(dt.getTime())) return null
@@ -94,8 +148,9 @@ export function displayBillHeaderRouteTo(bill) {
   return fb || '—'
 }
 
+/** Sum of balances (trip total − advance) — amount due for the bill. */
 export function grandTotal(entries) {
-  return entries.reduce((acc, r) => acc + rowTotal(r), 0)
+  return entries.reduce((acc, r) => acc + rowBalance(r), 0)
 }
 
 /** Move item from fromIndex to toIndex (0-based). Sr. no follows array order after reorder. */

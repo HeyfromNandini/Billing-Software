@@ -203,7 +203,6 @@ body {
   font-size: 0.8rem;
   color: var(--text-muted);
 }
-
 /* ----- Bill card ----- */
 .bill-card {
   background: var(--surface);
@@ -573,6 +572,27 @@ body {
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
+.transport-table td.rate-cell-pdf-text {
+  white-space: pre-wrap;
+  font-variant-numeric: normal;
+  line-height: 1.35;
+  text-align: center;
+}
+.transport-table th.col-rate,
+.transport-table td.col-rate {
+  min-width: 6.5rem;
+  box-sizing: border-box;
+}
+.transport-table tr.editable-entry-row td.col-rate {
+  min-width: 10rem;
+  width: 10rem;
+  max-width: 12rem;
+}
+.transport-table tr.editable-entry-row .cell-input.cell-rate-input {
+  min-width: 8.75rem;
+  width: 100%;
+  max-width: 100%;
+}
 .transport-table .row-actions {
   display: flex;
   align-items: center;
@@ -690,6 +710,19 @@ body {
   padding: 0.5rem 1.5rem;
   min-width: 8rem;
   text-align: center;
+}
+.sign-stamp-inner--stamp {
+  border: none;
+  padding: 0;
+  min-width: 0;
+}
+.company-stamp-img {
+  display: block;
+  max-height: 5.5rem;
+  max-width: 14rem;
+  width: auto;
+  height: auto;
+  object-fit: contain;
 }
 
 /* Buttons */
@@ -1827,5 +1860,11 @@ body {
   .sign-stamp-inner {
     border-color: #999;
     color: #333;
+  }
+  .sign-stamp-inner--stamp {
+    border: none;
+  }
+  .company-stamp-img {
+    max-height: 4.5rem;
   }
 }

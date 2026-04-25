@@ -1,5 +1,5 @@
 import { FIXED_HEADERS } from '../components/TransportTable'
-import { rowTotal, rowBalance } from '../utils/billing'
+import { rowTotal, rowBalance, displayEntryRate } from '../utils/billing'
 
 /** Row 1 col A — new layout: col B is version; bill fields are label/value rows below. */
 export const SHEET_SYNC_MARKER = '__BILL_SYNC_V3__'
@@ -17,6 +17,11 @@ function sortedCustomColumns(client) {
   return [...(client?.custom_columns || [])].sort(
     (a, b) => (Number(a.order) || 0) - (Number(b.order) || 0)
   )
+}
+
+/** Rate cell for sheet export — matches on-screen table (per-row rate, else Extra per ton). */
+function entryRateCellForSheet(bill, entry) {
+  return displayEntryRate(entry, String(bill?.rate_extra_per_ton ?? '').trim(), '')
 }
 
 export function buildBillSheetMeta(bill, client) {
@@ -49,8 +54,10 @@ const SHEET_INFO_LABELS = {
   'rate type': { key: 'rate_type', type: 'string' },
   'fixed rate': { key: 'rate_fixed', type: 'number' },
   'base weight (t)': { key: 'rate_base_weight', type: 'number' },
+  'base weight (kg)': { key: 'rate_base_weight', type: 'number' },
   'base amount': { key: 'rate_base_amount', type: 'number' },
   'extra per ton': { key: 'rate_extra_per_ton', type: 'number' },
+  'pdf rate text': { key: 'pdf_rate_column_text', type: 'string' },
 }
 
 /**
@@ -73,7 +80,7 @@ export function billToSheetRows(bill, client) {
     ['Route to', bill.route_to ?? ''],
     ['Rate type', bill.rate_type ?? ''],
     ['Fixed rate', bill.rate_fixed ?? ''],
-    ['Base weight (t)', bill.rate_base_weight ?? ''],
+    ['Base weight (kg)', bill.rate_base_weight ?? ''],
     ['Base amount', bill.rate_base_amount ?? ''],
     ['Extra per ton', bill.rate_extra_per_ton ?? ''],
   ]
@@ -92,7 +99,7 @@ export function billToSheetRows(bill, client) {
       e.from ?? '',
       e.to ?? '',
       e.weight ?? '',
-      e.rate ?? '',
+      entryRateCellForSheet(bill, e),
       total,
       e.advance ?? '',
       bal,
@@ -259,6 +266,7 @@ export function parseBillFromSheetValues(values, client) {
       to: colByKey.to != null ? String(row[colByKey.to] ?? '').trim() : '',
       weight: colByKey.weight != null ? numOrEmpty(row[colByKey.weight]) : '',
       rate: colByKey.rate != null ? numOrEmpty(row[colByKey.rate]) : '',
+      total: colByKey.total != null ? numOrEmpty(row[colByKey.total]) : '',
       advance: colByKey.advance != null ? numOrEmpty(row[colByKey.advance]) : 0,
       custom,
     }
@@ -271,6 +279,7 @@ export function parseBillFromSheetValues(values, client) {
       !entry.to &&
       entry.weight === '' &&
       entry.rate === '' &&
+      entry.total === '' &&
       (!entry.advance || entry.advance === 0) &&
       Object.keys(custom).every((k) => !String(custom[k] ?? '').trim())
     ) {
@@ -298,6 +307,7 @@ export function parseBillFromSheetValues(values, client) {
     if (meta.rate_base_weight != null) billPatch.rate_base_weight = Number(meta.rate_base_weight) || 0
     if (meta.rate_base_amount != null) billPatch.rate_base_amount = Number(meta.rate_base_amount) || 0
     if (meta.rate_extra_per_ton != null) billPatch.rate_extra_per_ton = Number(meta.rate_extra_per_ton) || 0
+    if (meta.pdf_rate_column_text != null) billPatch.pdf_rate_column_text = String(meta.pdf_rate_column_text)
   }
 
   if (isV2) {
@@ -326,6 +336,7 @@ function stableEntryCompare(e) {
     to: String(e.to ?? '').trim(),
     weight: e.weight === '' || e.weight == null ? '' : Number(e.weight),
     rate: e.rate === '' || e.rate == null ? '' : Number(e.rate),
+    total: e.total === '' || e.total == null ? '' : Number(e.total),
     advance: e.advance == null || e.advance === '' ? 0 : Number(e.advance),
     custom: JSON.stringify(sortKeysObj(e.custom || {})),
   }
@@ -346,6 +357,7 @@ export function billContentDiffersFromPatch(bill, billPatch) {
     'rate_base_weight',
     'rate_base_amount',
     'rate_extra_per_ton',
+    'pdf_rate_column_text',
   ]
   for (const k of keys) {
     if (billPatch[k] === undefined) continue
