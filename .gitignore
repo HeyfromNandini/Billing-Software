@@ -9,3 +9,5 @@ google-sa-key.json
 .rebuild-preview.json
 appdata-backup-before-rebuild.json
 backups/
+
+.vercel
