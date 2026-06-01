@@ -2,6 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import { existsSync } from 'fs'
+import { fileURLToPath } from 'url'
 import {
   readAppData,
   saveAppData,
@@ -128,6 +129,12 @@ app.get('/api/billing/drive/bill-sheet', requireBillingSecret, async (req, res) 
   }
 })
 
-app.listen(PORT, () => {
-  console.log(`[billing-api] http://localhost:${PORT}  (master sheet + Drive via service account)`)
-})
+const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
+
+if (isDirectRun) {
+  app.listen(PORT, () => {
+    console.log(`[billing-api] http://localhost:${PORT}  (master sheet + Drive via service account)`)
+  })
+}
+
+export default app
