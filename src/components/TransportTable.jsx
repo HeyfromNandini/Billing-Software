@@ -1,6 +1,9 @@
-import { useMemo, useState, useRef, useEffect, useCallback } from 'react'
+import { useMemo, useRef, useEffect, useCallback, useState } from 'react'
 import { formatDate, rowTotal, rowBalance, displayEntryRate, entryHasNumericRate } from '../utils/billing'
 import EditableEntryRow from './EditableEntryRow'
+
+/** Ignore tiny pointer jitter when finishing a drag (reduces accidental one-line moves). */
+const REORDER_DRAG_SLOP_PX = 20
 
 export const FIXED_HEADERS = [
   'Sr. no',
@@ -33,6 +36,47 @@ export function buildPdfColumnLayout(customColumns) {
   return buildColumnLayout(customColumns).filter((item) => item.type !== 'action')
 }
 
+/** Relative width weight for PDF colgroup (normalized to 100% in appendPdfColgroup). */
+function pdfColWeight(item) {
+  if (item.type === 'custom') return 6
+  switch (item.index) {
+    case 1: return 4
+    case 2: return 7
+    case 3: return 8
+    case 4: return 8
+    case 5: return 9
+    case 6: return 9
+    case 7: return 5
+    case 8: return 7
+    case 9: return 9
+    case 10: return 9
+    case 11: return 9
+    default: return 7
+  }
+}
+
+export function isPdfMoneyColumn(item) {
+  return item.type === 'fixed' && [9, 10, 11].includes(item.index)
+}
+
+export function isPdfEllipsisTextColumn(item) {
+  if (item.type === 'custom') return true
+  return item.type === 'fixed' && [5, 6].includes(item.index)
+}
+
+/** Inserts a <colgroup> before thead so money columns keep enough width in fixed layout. */
+export function appendPdfColgroup(table, layout) {
+  const weights = layout.map(pdfColWeight)
+  const sum = weights.reduce((acc, w) => acc + w, 0) || 1
+  const colgroup = document.createElement('colgroup')
+  weights.forEach((w) => {
+    const col = document.createElement('col')
+    col.style.width = `${((w / sum) * 100).toFixed(2)}%`
+    colgroup.appendChild(col)
+  })
+  table.insertBefore(colgroup, table.firstChild)
+}
+
 export default function TransportTable({
   entries,
   editingId,
@@ -58,6 +102,8 @@ export default function TransportTable({
   const [dragOverIndex, setDragOverIndex] = useState(null)
   const pointerFromRef = useRef(null)
   const latestOverRef = useRef(null)
+  const reorderSlopMetRef = useRef(false)
+  const pointerDownPosRef = useRef(null)
   const onReorderRef = useRef(onReorderEntries)
   const canReorder = typeof onReorderEntries === 'function' && !editingId
 
@@ -78,6 +124,8 @@ export default function TransportTable({
       e.stopPropagation()
       pointerFromRef.current = rowIndex
       latestOverRef.current = rowIndex
+      reorderSlopMetRef.current = false
+      pointerDownPosRef.current = { x: e.clientX, y: e.clientY }
       setDraggingIndex(rowIndex)
       setDragOverIndex(rowIndex)
       e.currentTarget.setPointerCapture(e.pointerId)
@@ -89,6 +137,14 @@ export default function TransportTable({
     (e) => {
       if (pointerFromRef.current === null) return
       if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
+      const start = pointerDownPosRef.current
+      if (start) {
+        const dx = e.clientX - start.x
+        const dy = e.clientY - start.y
+        if (dx * dx + dy * dy >= REORDER_DRAG_SLOP_PX * REORDER_DRAG_SLOP_PX) {
+          reorderSlopMetRef.current = true
+        }
+      }
       const tr = rowFromClientPoint(e.clientX, e.clientY)
       if (tr) {
         const idx = parseInt(tr.getAttribute('data-entry-row-index'), 10)
@@ -110,8 +166,19 @@ export default function TransportTable({
       if (Number.isNaN(to) && latestOverRef.current != null) {
         to = latestOverRef.current
       }
+      const start = pointerDownPosRef.current
+      if (start) {
+        const dx = e.clientX - start.x
+        const dy = e.clientY - start.y
+        if (dx * dx + dy * dy >= REORDER_DRAG_SLOP_PX * REORDER_DRAG_SLOP_PX) {
+          reorderSlopMetRef.current = true
+        }
+      }
       pointerFromRef.current = null
       latestOverRef.current = null
+      pointerDownPosRef.current = null
+      const slopOk = reorderSlopMetRef.current
+      reorderSlopMetRef.current = false
       if (e.currentTarget.hasPointerCapture(e.pointerId)) {
         try {
           e.currentTarget.releasePointerCapture(e.pointerId)
@@ -121,7 +188,7 @@ export default function TransportTable({
       }
       setDraggingIndex(null)
       setDragOverIndex(null)
-      if (!Number.isNaN(to) && from !== to) {
+      if (slopOk && !Number.isNaN(to) && from !== to) {
         onReorderRef.current?.(from, to)
       }
     },
@@ -131,6 +198,8 @@ export default function TransportTable({
   const handleRowHandleLostCapture = useCallback(() => {
     pointerFromRef.current = null
     latestOverRef.current = null
+    pointerDownPosRef.current = null
+    reorderSlopMetRef.current = false
     setDraggingIndex(null)
     setDragOverIndex(null)
   }, [])
@@ -168,7 +237,7 @@ export default function TransportTable({
                   <th
                     key={`fixed-${item.index}`}
                     className={[item.index === 1 && 'col-sr-no', item.index === 8 && 'col-rate'].filter(Boolean).join(' ') || undefined}
-                    title={item.index === 1 && canReorder ? 'Drag ⋮⋮ beside a row’s number to change order' : undefined}
+                    title={item.index === 1 && canReorder ? 'Sr. no is automatic. Drag ⋮⋮ to move a row — numbers update after you drop.' : undefined}
                   >
                     {FIXED_HEADERS[item.index - 1]}
                   </th>
@@ -235,12 +304,12 @@ export default function TransportTable({
                             onPointerUp={handleRowHandlePointerUp}
                             onPointerCancel={handleRowHandleLostCapture}
                             onLostPointerCapture={handleRowHandleLostCapture}
-                            title="Hold and drag to reorder rows"
+                            title="Drag to move this row — Sr. no updates to the new position when you release"
                             aria-label={`Drag to reorder row ${index + 1}`}
                           >
                             ⋮⋮
                           </span>
-                          <span className="sr-no-value">{index + 1}</span>
+                          <span className="sr-no-value" aria-hidden="true">{index + 1}</span>
                         </td>
                       )
                     }

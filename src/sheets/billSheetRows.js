@@ -7,10 +7,23 @@ export const SHEET_SYNC_MARKER = '__BILL_SYNC_V3__'
 /** Legacy tabs still parse (JSON in B1 + title row). */
 export const SHEET_SYNC_MARKER_V2 = '__BILL_SYNC_V2__'
 
-/** Google Sheet tab name (max ~100 chars; avoid * ? : \ / [ ]). */
-export function billSheetTitle(bill) {
+/** Legacy tab name (bill number only) — used as read fallback after unique titles shipped. */
+export function legacyBillSheetTitle(bill) {
   const n = String(bill?.bill_number ?? '0').replace(/[*?:\\/[\]]/g, '-')
   return `Bill-${n}`.slice(0, 99)
+}
+
+/**
+ * Google Sheet tab name (max ~100 chars; avoid * ? : \ / [ ]).
+ * Includes bill id so two bills with the same number never share one worksheet (same company file).
+ */
+export function billSheetTitle(bill) {
+  const n = String(bill?.bill_number ?? '0').replace(/[*?:\\/[\]]/g, '-')
+  const bid = String(bill?.id ?? '')
+    .replace(/[*?:\\/[\]]/g, '-')
+    .replace(/^-+|-+$/g, '')
+  const withId = bid ? `Bill-${n}__${bid}` : legacyBillSheetTitle(bill)
+  return withId.slice(0, 99)
 }
 
 function sortedCustomColumns(client) {

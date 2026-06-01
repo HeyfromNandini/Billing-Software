@@ -4,7 +4,13 @@ import { useApp } from '../context/AppContext'
 import Header from '../components/Header'
 import CompanyBlock from '../components/CompanyBlock'
 import BillInfoBlock from '../components/BillInfoBlock'
-import TransportTable, { buildPdfColumnLayout, FIXED_HEADERS } from '../components/TransportTable'
+import TransportTable, {
+  appendPdfColgroup,
+  buildPdfColumnLayout,
+  FIXED_HEADERS,
+  isPdfEllipsisTextColumn,
+  isPdfMoneyColumn,
+} from '../components/TransportTable'
 import TotalsBlock from '../components/TotalsBlock'
 import EntryModal from '../components/EntryModal'
 import VehicleCombobox from '../components/VehicleCombobox'
@@ -16,16 +22,17 @@ import {
   rowTotal,
   rowBalance,
   reorderEntriesByIndex,
-  parseBillDate,
   displayBillHeaderRouteTo,
   rateBaseWeightKgFromStored,
   displayEntryRate,
   entryHasNumericRate,
+  newBillEntryId,
 } from '../utils/billing'
 import { isDriveLayoutConfigured, companySpreadsheetId } from '../sheets/config'
 import { getSpreadsheetMeta, readBillSheet } from '../sheets/driveLayout'
 import {
   billSheetTitle,
+  legacyBillSheetTitle,
   parseBillFromSheetValues,
   billContentDiffersFromPatch,
 } from '../sheets/billSheetRows'
@@ -56,93 +63,6 @@ function waitForImagesLoaded(container) {
         })
     )
   )
-}
-
-let nextEntryId = 1000
-
-function normalizeVehicleToken(s) {
-  return String(s ?? '')
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-/** Vehicle matching helper that ignores spaces, dashes, and punctuation. */
-function normalizeVehicleCompactToken(s) {
-  return String(s ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '')
-    .trim()
-}
-
-/** Comma, semicolon, or newline — show row if vehicle matches any token (substring, case-insensitive). */
-function parseVehicleFilterTokens(filterRaw) {
-  return String(filterRaw ?? '')
-    .split(/[,;|/\n]+/)
-    .map((t) => normalizeVehicleToken(t))
-    .filter(Boolean)
-}
-
-function entryMatchesVehicleFilter(entry, filterRaw) {
-  const tokens = parseVehicleFilterTokens(filterRaw)
-  if (tokens.length === 0) return true
-  const vehicleLoose = normalizeVehicleToken(entry.vehicle_number)
-  const vehicleCompact = normalizeVehicleCompactToken(entry.vehicle_number)
-  return tokens.some((q) => {
-    if (vehicleLoose.includes(q)) return true
-    const qCompact = normalizeVehicleCompactToken(q)
-    return qCompact && vehicleCompact.includes(qCompact)
-  })
-}
-
-function filterBillEntriesByVehicle(entries, vehicleFilter) {
-  return entries.filter((e) => entryMatchesVehicleFilter(e, vehicleFilter))
-}
-
-/** Sort by trip date; rows without a parseable date go last. */
-function compareEntriesByTripDate(a, b, direction) {
-  const da = parseBillDate(a?.date)
-  const db = parseBillDate(b?.date)
-  const ta = da ? da.getTime() : null
-  const tb = db ? db.getTime() : null
-  if (ta == null && tb == null) return 0
-  if (ta == null) return 1
-  if (tb == null) return -1
-  const cmp = ta - tb
-  return direction === 'desc' ? -cmp : cmp
-}
-
-function compareEntriesByInvoice(a, b, direction) {
-  const sa = String(a?.invoice_number ?? '').trim()
-  const sb = String(b?.invoice_number ?? '').trim()
-  if (sa === '' && sb === '') return 0
-  if (sa === '') return 1
-  if (sb === '') return -1
-  const aNum = /^-?\d+$/.test(sa)
-  const bNum = /^-?\d+$/.test(sb)
-  const na = aNum ? Number(sa) : NaN
-  const nb = bNum ? Number(sb) : NaN
-  let cmp
-  if (aNum && bNum) cmp = na - nb
-  else cmp = sa.localeCompare(sb, undefined, { numeric: true, sensitivity: 'base' })
-  return direction === 'desc' ? -cmp : cmp
-}
-
-/** When both date and invoice sorts are on, date is primary and invoice breaks ties. */
-function compareEntriesForBillTable(a, b, dateSort, invoiceSort) {
-  if (dateSort === 'asc' || dateSort === 'desc') {
-    const c = compareEntriesByTripDate(a, b, dateSort)
-    if (c !== 0) return c
-  }
-  if (invoiceSort === 'asc' || invoiceSort === 'desc') {
-    return compareEntriesByInvoice(a, b, invoiceSort)
-  }
-  return 0
-}
-
-function applyTableSorts(entries, dateSort, invoiceSort) {
-  if (dateSort === 'none' && invoiceSort === 'none') return entries
-  return [...entries].sort((a, b) => compareEntriesForBillTable(a, b, dateSort, invoiceSort))
 }
 
 const defaultRateRule = {
@@ -180,9 +100,6 @@ export default function BillPage() {
   const [editingColumnName, setEditingColumnName] = useState('')
   const [editingColumnOrder, setEditingColumnOrder] = useState('')
   const [sheetConflict, setSheetConflict] = useState(null)
-  const [vehicleFilter, setVehicleFilter] = useState('')
-  const [dateSort, setDateSort] = useState('none')
-  const [invoiceSort, setInvoiceSort] = useState('none')
   const lastLocalEditRef = useRef(0)
   const billRef = useRef(null)
   const clientRef = useRef(null)
@@ -193,32 +110,12 @@ export default function BillPage() {
   const rawCustomColumns = client?.custom_columns ?? []
   const customColumns = [...rawCustomColumns].map((c) => ({ ...c, order: Math.max(1, Math.min(Number(c.order) || 12, 12)) }))
   const entries = bill?.entries ?? []
-  const vehicleFilterActive = vehicleFilter.trim().length > 0
-  const dateSortActive = dateSort !== 'none'
-  const invoiceSortActive = invoiceSort !== 'none'
-  const tableFiltersActive = vehicleFilterActive || dateSortActive || invoiceSortActive
-  const vehicleFilteredEntries = useMemo(
-    () => filterBillEntriesByVehicle(entries, vehicleFilter),
-    [entries, vehicleFilter]
-  )
-  const filteredEntries = useMemo(
-    () => applyTableSorts(vehicleFilteredEntries, dateSort, invoiceSort),
-    [vehicleFilteredEntries, dateSort, invoiceSort]
-  )
   const rateColumnFallback = useMemo(
     () => String(rateVariable.rate_extra_per_ton ?? '').trim(),
     [rateVariable.rate_extra_per_ton]
   )
 
-  const vehicleDatalistOptions = useMemo(() => {
-    const set = new Set()
-    for (const e of entries) {
-      const v = String(e.vehicle_number ?? '').trim()
-      if (v) set.add(v)
-    }
-    return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
-  }, [entries])
-  const totalAmount = grandTotal(filteredEntries)
+  const totalAmount = grandTotal(entries)
   const stampCompany = (bill?.company_id && getCompany(bill.company_id)) || company
   const stampSrc = companyStampSrc(stampCompany?.id, stampCompany)
 
@@ -230,18 +127,15 @@ export default function BillPage() {
   }, [])
 
   const touchLocalAndUpdateBill = useCallback(
-    (id, updates) => {
+    (id, updatesOrFn) => {
       touchLocal()
-      updateBill(id, updates)
+      updateBill(id, updatesOrFn)
     },
     [updateBill, touchLocal]
   )
 
   useEffect(() => {
     setSheetConflict(null)
-    setVehicleFilter('')
-    setDateSort('none')
-    setInvoiceSort('none')
   }, [billId])
 
   useEffect(() => {
@@ -249,40 +143,67 @@ export default function BillPage() {
     const sid0 = companySpreadsheetId(bill.company_id)
     if (!sid0) return undefined
 
+    let cancelled = false
+
     const poll = async () => {
       const cur = billRef.current
       const cli = clientRef.current
       const sid = cur ? companySpreadsheetId(cur.company_id) : ''
       if (!cur || !cli || !sid) return
-      const sheetName = billSheetTitle(cur)
+      const snapshotBillId = cur.id
+      const primarySheetName = billSheetTitle(cur)
+      const legacySheetName = legacyBillSheetTitle(cur)
 
       try {
         const localAt = cur.drive_file_updated_at
-        // Skip full sheet read when Drive says the file hasn’t changed since our last push/pull.
-        // When localAt is missing (never synced from this browser), always read once to set baseline or detect edits.
         if (localAt) {
           const meta = await getSpreadsheetMeta(sid)
+          if (cancelled) return
+          if (!billRef.current || billRef.current.id !== snapshotBillId) return
           const remote = meta.fileLastUpdated
           if (!remote) return
           if (new Date(remote) <= new Date(localAt)) return
         }
 
-        const data = await readBillSheet({ spreadsheetId: sid, sheetName })
+        let data = await readBillSheet({ spreadsheetId: sid, sheetName: primarySheetName })
+        if (cancelled) return
+        if (!billRef.current || billRef.current.id !== snapshotBillId) return
+
+        if (
+          (!data.ok || !data.values?.length) &&
+          legacySheetName !== primarySheetName
+        ) {
+          const dataLegacy = await readBillSheet({ spreadsheetId: sid, sheetName: legacySheetName })
+          if (cancelled) return
+          if (!billRef.current || billRef.current.id !== snapshotBillId) return
+          if (dataLegacy.ok && dataLegacy.values?.length) {
+            data = dataLegacy
+          }
+        }
+
+        if (cancelled) return
+        const curFinal = billRef.current
+        if (!curFinal || curFinal.id !== snapshotBillId) return
+
         if (!data.ok || !data.values) return
 
         const parsed = parseBillFromSheetValues(data.values, cli)
         if (!parsed) return
 
-        if (!billContentDiffersFromPatch(cur, parsed.billPatch)) {
+        if (!billContentDiffersFromPatch(curFinal, parsed.billPatch)) {
           if (data.fileLastUpdated) {
-            patchBillDriveMeta(cur.id, { drive_file_updated_at: data.fileLastUpdated })
+            patchBillDriveMeta(snapshotBillId, { drive_file_updated_at: data.fileLastUpdated })
           }
           return
         }
 
         if (Date.now() - lastLocalEditRef.current < 3000) return
 
+        if (cancelled) return
+        if (billRef.current?.id !== snapshotBillId) return
+
         setSheetConflict({
+          forBillId: snapshotBillId,
           billPatch: parsed.billPatch,
           fileLastUpdated: data.fileLastUpdated,
         })
@@ -293,12 +214,16 @@ export default function BillPage() {
 
     const iv = setInterval(poll, 20000)
     poll()
-    return () => clearInterval(iv)
+    return () => {
+      cancelled = true
+      clearInterval(iv)
+    }
   }, [
     billId,
     bill?.company_id,
     client?.id,
     bill?.bill_number,
+    bill?.id,
     patchBillDriveMeta,
   ])
 
@@ -455,17 +380,15 @@ export default function BillPage() {
   const handleSaveEntry = useCallback(
     (payload, id) => {
       if (!bill) return
-      const newEntry = {
-        ...payload,
-        id: id ?? nextEntryId++,
-      }
-      let newEntries
-      if (id != null) {
-        newEntries = (bill.entries ?? []).map((e) => (e.id === id ? { ...e, ...newEntry } : e))
-      } else {
-        newEntries = [...(bill.entries ?? []), newEntry]
-      }
-      touchLocalAndUpdateBill(billId, { entries: newEntries })
+      touchLocalAndUpdateBill(billId, (b) => {
+        const cur = b.entries ?? []
+        if (id != null) {
+          const newEntry = { ...payload, id }
+          return { entries: cur.map((e) => (e.id === id ? { ...e, ...newEntry } : e)) }
+        }
+        const newEntry = { ...payload, id: newBillEntryId() }
+        return { entries: [...cur, newEntry] }
+      })
       closeModal()
     },
     [bill, billId, touchLocalAndUpdateBill, closeModal]
@@ -474,8 +397,9 @@ export default function BillPage() {
   const handleDeleteEntry = useCallback(
     (id) => {
       if (!bill || !window.confirm('Remove this entry?')) return
-      const newEntries = (bill.entries ?? []).filter((e) => e.id !== id)
-      touchLocalAndUpdateBill(billId, { entries: newEntries })
+      touchLocalAndUpdateBill(billId, (b) => ({
+        entries: (b.entries ?? []).filter((e) => e.id !== id),
+      }))
       if (editingId === id) setEditingId(null)
     },
     [bill, billId, touchLocalAndUpdateBill, editingId]
@@ -484,10 +408,11 @@ export default function BillPage() {
   const handleReorderEntries = useCallback(
     (fromIndex, toIndex) => {
       if (!bill) return
-      const next = reorderEntriesByIndex(entries, fromIndex, toIndex)
-      touchLocalAndUpdateBill(billId, { entries: next })
+      touchLocalAndUpdateBill(billId, (b) => ({
+        entries: reorderEntriesByIndex(b.entries ?? [], fromIndex, toIndex),
+      }))
     },
-    [bill, billId, entries, touchLocalAndUpdateBill]
+    [bill, billId, touchLocalAndUpdateBill]
   )
 
   const billCardRef = useRef(null)
@@ -496,9 +421,7 @@ export default function BillPage() {
     if (!company || !bill) return
     import('html2pdf.js').then(async ({ default: html2pdf }) => {
       const pdfLayout = buildPdfColumnLayout(customColumns)
-      const all = bill.entries ?? []
-      const base = filterBillEntriesByVehicle(all, vehicleFilter)
-      const entriesList = applyTableSorts(base, dateSort, invoiceSort)
+      const entriesList = bill.entries ?? []
       const chunks = []
       for (let i = 0; i < entriesList.length; i += ROWS_PER_PAGE) {
         chunks.push(entriesList.slice(i, i + ROWS_PER_PAGE))
@@ -530,8 +453,8 @@ export default function BillPage() {
       root.className = 'pdf-bill-root'
       const pdfStyles = document.createElement('style')
       pdfStyles.textContent = `
-        .pdf-bill-root { width: 100%; box-sizing: border-box; }
-        .pdf-page { page-break-after: always; padding: 2mm 4mm 2mm 4mm; box-sizing: border-box; }
+        .pdf-bill-root { width: 100%; box-sizing: border-box; padding-right: 4px; }
+        .pdf-page { page-break-after: always; padding: 2mm 6mm 2mm 4mm; box-sizing: border-box; }
         .pdf-page:last-child { page-break-after: auto; }
         .pdf-bill-root .company-block { padding: 0.25rem 0 0.15rem 0 !important; margin-bottom: 0.15rem !important; border-bottom: none !important; text-align: center !important; }
         .pdf-bill-root .company-block .company-name { margin: 0 0 0.1em !important; font-size: 2.6rem !important; font-weight: 900 !important; color: #b91c1c !important; }
@@ -544,9 +467,20 @@ export default function BillPage() {
         .pdf-bill-root .bill-info-block .route-row { display: flex !important; flex-wrap: wrap !important; align-items: center !important; gap: 0.35rem 1rem !important; margin-top: 0.15rem !important; font-size: 0.85rem !important; }
         .pdf-bill-root .bill-info-block .route-row .label { font-size: 0.6rem !important; }
         .pdf-bill-root .bill-info-block .route-row .value { font-size: 0.85rem !important; }
-        .pdf-bill-root .table-scroll { overflow: visible !important; width: 100% !important; margin: 0 !important; }
-        .pdf-bill-root .transport-table { width: 100% !important; table-layout: fixed !important; font-size: 11px !important; border-collapse: collapse; }
+        .pdf-bill-root .table-scroll { overflow: visible !important; width: 100% !important; margin: 0 !important; padding-right: 2px !important; }
+        .pdf-bill-root .transport-table { width: 99% !important; table-layout: fixed !important; font-size: 11px !important; border-collapse: collapse; }
         .pdf-bill-root .transport-table th, .pdf-bill-root .transport-table td { padding: 5px 6px !important; box-sizing: border-box; border-bottom: 1px solid #ccc; text-align: center !important; }
+        .pdf-bill-root .transport-table th.col-money, .pdf-bill-root .transport-table td.col-money {
+          min-width: 5.25rem !important;
+          white-space: nowrap !important;
+          overflow: visible !important;
+          font-variant-numeric: tabular-nums !important;
+        }
+        .pdf-bill-root .transport-table th.col-pdf-text, .pdf-bill-root .transport-table td.col-pdf-text {
+          overflow: hidden !important;
+          text-overflow: ellipsis !important;
+          white-space: nowrap !important;
+        }
         .pdf-bill-root .transport-table td.pdf-rate-cell-display-text { white-space: pre-wrap !important; text-align: center !important; line-height: 1.25 !important; }
         .pdf-bill-root .transport-table th.col-sr-no, .pdf-bill-root .transport-table td.col-sr-no { width: 3.25rem !important; min-width: 3.25rem !important; max-width: 3.25rem !important; }
         .pdf-bill-root .transport-table th { font-weight: 600; background: #f5f5f5; }
@@ -554,7 +488,12 @@ export default function BillPage() {
         .pdf-bill-root .transport-table tr.pdf-page-total td { font-weight: 600; border-top: 2px solid #333; padding-top: 6px !important; }
         .pdf-bill-root .transport-table tr.pdf-grand-total-row td { font-weight: 700; border-top: 2px solid #111; padding-top: 8px !important; font-size: 0.95rem !important; }
         .pdf-bill-root .transport-table tr.pdf-grand-total-row td.grand-total-label-cell { white-space: nowrap !important; min-width: 5rem !important; width: auto !important; max-width: none !important; color: #0d6e2e !important; }
-        .pdf-bill-root .transport-table tr.pdf-grand-total-row td.grand-total-value-cell { color: #0d6e2e !important; }
+        .pdf-bill-root .transport-table tr.pdf-grand-total-row td.grand-total-value-cell {
+          color: #0d6e2e !important;
+          white-space: nowrap !important;
+          overflow: visible !important;
+          padding-right: 8px !important;
+        }
         .pdf-bill-root .pdf-sign-stamp-block {
           margin-top: 0.35rem !important;
           padding-top: 0 !important;
@@ -595,6 +534,15 @@ export default function BillPage() {
         return div.innerHTML
       }
 
+      function pdfLayoutCellClasses(item, extra = '') {
+        const parts = []
+        if (item.type === 'fixed' && item.index === 1) parts.push('col-sr-no')
+        if (isPdfMoneyColumn(item)) parts.push('col-money')
+        if (isPdfEllipsisTextColumn(item)) parts.push('col-pdf-text')
+        if (extra) parts.push(extra)
+        return parts.filter(Boolean).join(' ')
+      }
+
       const billDateDisplay = bill.bill_date ? bill.bill_date.replace(/-/g, '.') : '—'
       const phones = [company.phone_1, company.phone_2].filter(Boolean).join(' / ')
 
@@ -630,6 +578,7 @@ export default function BillPage() {
         tableScroll.className = 'table-scroll'
         const table = document.createElement('table')
         table.className = 'transport-table'
+        appendPdfColgroup(table, pdfLayout)
 
         const thead = document.createElement('thead')
         const headerRow = document.createElement('tr')
@@ -637,8 +586,11 @@ export default function BillPage() {
           const th = document.createElement('th')
           if (item.type === 'fixed') {
             th.textContent = FIXED_HEADERS[item.index - 1]
-            if (item.index === 1) th.className = 'col-sr-no'
-          } else if (item.type === 'custom') th.textContent = item.col.name
+          } else if (item.type === 'custom') {
+            th.textContent = item.col.name
+          }
+          const cn = pdfLayoutCellClasses(item)
+          if (cn) th.className = cn
           headerRow.appendChild(th)
         })
         thead.appendChild(headerRow)
@@ -653,15 +605,19 @@ export default function BillPage() {
             const td = document.createElement('td')
             if (item.type === 'custom') {
               td.textContent = row.custom?.[item.col.id] ?? '—'
+              const cn = pdfLayoutCellClasses(item)
+              if (cn) td.className = cn
             } else {
               const val = renderFixedCell(row, globalIndex, item.index)
               td.textContent = val
-              let cellClass = [1, 7, 8, 9, 10, 11].includes(item.index) ? 'num' : ''
-              if (item.index === 8 && rateColumnFallback && !entryHasNumericRate(row)) {
-                cellClass += ' pdf-rate-cell-display-text'
-              }
-              td.className = cellClass
-              if (item.index === 1) td.className += ' col-sr-no'
+              const extra = [
+                [1, 7, 8, 9, 10, 11].includes(item.index) ? 'num' : '',
+                item.index === 8 && rateColumnFallback && !entryHasNumericRate(row) ? 'pdf-rate-cell-display-text' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')
+              const cn = pdfLayoutCellClasses(item, extra)
+              if (cn) td.className = cn
             }
             tr.appendChild(td)
           })
@@ -674,10 +630,14 @@ export default function BillPage() {
         totalRow.className = 'pdf-page-total'
         pdfLayout.forEach((item) => {
           const td = document.createElement('td')
-          if (item.type === 'fixed' && item.index === 1) { td.textContent = 'Total'; td.className = 'col-sr-no' }
-          else if (item.type === 'fixed' && item.index === 9) { td.textContent = pageTotalFreight.toLocaleString('en-IN'); td.className = 'num' }
-          else if (item.type === 'fixed' && item.index === 11) { td.textContent = pageTotalBalance.toLocaleString('en-IN'); td.className = 'num' }
+          if (item.type === 'fixed' && item.index === 1) td.textContent = 'Total'
+          else if (item.type === 'fixed' && item.index === 9) td.textContent = pageTotalFreight.toLocaleString('en-IN')
+          else if (item.type === 'fixed' && item.index === 11) td.textContent = pageTotalBalance.toLocaleString('en-IN')
           else td.textContent = ''
+          const extra =
+            item.type === 'fixed' && (item.index === 9 || item.index === 11) ? 'num' : ''
+          const cn = pdfLayoutCellClasses(item, extra)
+          if (cn) td.className = cn
           totalRow.appendChild(td)
         })
         tbody.appendChild(totalRow)
@@ -688,10 +648,18 @@ export default function BillPage() {
           grandRow.className = 'pdf-grand-total-row'
           pdfLayout.forEach((item) => {
             const td = document.createElement('td')
-            if (item.type === 'fixed' && item.index === 1) { td.textContent = 'Grand Total'; td.className = 'grand-total-label-cell' }
-            else if (item.type === 'fixed' && item.index === 9) { td.textContent = grandTotalFreight.toLocaleString('en-IN'); td.className = 'num grand-total-value-cell' }
-            else if (item.type === 'fixed' && item.index === 11) { td.textContent = grandTotalBalance.toLocaleString('en-IN'); td.className = 'num grand-total-value-cell' }
+            if (item.type === 'fixed' && item.index === 1) td.textContent = 'Grand Total'
+            else if (item.type === 'fixed' && item.index === 9) td.textContent = grandTotalFreight.toLocaleString('en-IN')
+            else if (item.type === 'fixed' && item.index === 11) td.textContent = grandTotalBalance.toLocaleString('en-IN')
             else td.textContent = ''
+            const extra = [
+              item.type === 'fixed' && item.index === 1 ? 'grand-total-label-cell' : '',
+              item.type === 'fixed' && (item.index === 9 || item.index === 11) ? 'num grand-total-value-cell' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')
+            const cn = pdfLayoutCellClasses(item, extra)
+            if (cn) td.className = cn
             grandRow.appendChild(td)
           })
           tbody.appendChild(grandRow)
@@ -724,7 +692,7 @@ export default function BillPage() {
       })
 
       const wrapper = document.createElement('div')
-      wrapper.style.cssText = 'position:fixed;left:-9999px;top:0;width:1060px;box-sizing:border-box;'
+      wrapper.style.cssText = 'position:fixed;left:-9999px;top:0;width:1060px;box-sizing:border-box;padding:0 10px 0 0;'
       wrapper.appendChild(root)
       document.body.appendChild(wrapper)
       await waitForImagesLoaded(wrapper)
@@ -736,7 +704,7 @@ export default function BillPage() {
       try {
         await html2pdf()
           .set({
-            margin: 3,
+            margin: [3, 3, 3, 6],
             filename,
             image: { type: 'jpeg', quality: 0.98 },
             html2canvas: {
@@ -756,7 +724,7 @@ export default function BillPage() {
         wrapper.remove()
       }
     })
-  }, [bill, company, customColumns, vehicleFilter, dateSort, invoiceSort, rateColumnFallback, getCompany])
+  }, [bill, company, customColumns, rateColumnFallback, getCompany])
 
   const handleRateRuleSave = useCallback(
     (e) => {
@@ -785,30 +753,39 @@ export default function BillPage() {
 
   const handleLoadFromSheet = useCallback(() => {
     if (!sheetConflict || !bill) return
+    if (sheetConflict.forBillId != null && sheetConflict.forBillId !== billId) return
     touchLocal()
-    const patch = { ...sheetConflict.billPatch }
-    if (Array.isArray(patch.entries) && Array.isArray(bill.entries) && patch.entries.length === bill.entries.length) {
-      patch.entries = patch.entries.map((e, i) => ({ ...e, id: bill.entries[i].id }))
-    }
-    updateBill(billId, patch)
-    if (sheetConflict.fileLastUpdated) {
-      patchBillDriveMeta(billId, { drive_file_updated_at: sheetConflict.fileLastUpdated })
+    const conflict = sheetConflict
+    updateBill(billId, (b) => {
+      const patch = { ...conflict.billPatch }
+      if (Array.isArray(patch.entries) && Array.isArray(b.entries) && patch.entries.length === b.entries.length) {
+        patch.entries = patch.entries.map((e, i) => ({ ...e, id: b.entries[i].id }))
+      }
+      return patch
+    })
+    if (conflict.fileLastUpdated) {
+      patchBillDriveMeta(billId, { drive_file_updated_at: conflict.fileLastUpdated })
     }
     setSheetConflict(null)
   }, [sheetConflict, bill, billId, updateBill, patchBillDriveMeta, touchLocal])
 
   const handlePushToSheet = useCallback(async () => {
-    if (!bill) return
+    const b = billRef.current
+    if (!b) return
     touchLocal()
     try {
-      await flushBillToDriveNow(bill)
+      await flushBillToDriveNow(b)
     } catch (e) {
       console.error('[Drive] overwrite sheet', e)
     }
     setSheetConflict(null)
-  }, [bill, touchLocal])
+  }, [touchLocal])
 
   const handleDismissSheetConflict = useCallback(() => {
+    if (sheetConflict?.forBillId != null && sheetConflict.forBillId !== billId) {
+      setSheetConflict(null)
+      return
+    }
     if (sheetConflict?.fileLastUpdated) {
       patchBillDriveMeta(billId, { drive_file_updated_at: sheetConflict.fileLastUpdated })
     }
@@ -912,128 +889,15 @@ export default function BillPage() {
                   </>
                 )}
               </div>
-              <div className="bill-table-filters no-print">
-                <div className="bill-filter-row">
-                  <label className="bill-filter-label" htmlFor={`bill-vehicle-filter-${billId}`}>
-                    Vehicle
-                  </label>
-                  <input
-                    id={`bill-vehicle-filter-${billId}`}
-                    className="bill-filter-input bill-filter-input-vehicle"
-                    type="text"
-                    list={`vehicle-filter-dl-${billId}`}
-                    value={vehicleFilter}
-                    onChange={(e) => setVehicleFilter(e.target.value)}
-                    placeholder="e.g. MH46, NL01AD — comma / ; / line"
-                    title="Multiple vehicles: separate with comma, semicolon, or new line. Matches any."
-                    autoComplete="off"
-                  />
-                  <datalist id={`vehicle-filter-dl-${billId}`}>
-                    {vehicleDatalistOptions.map((v) => (
-                      <option key={v} value={v} />
-                    ))}
-                  </datalist>
-                  {vehicleFilterActive ? (
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm bill-filter-clear"
-                      onClick={() => setVehicleFilter('')}
-                    >
-                      Clear vehicle
-                    </button>
-                  ) : null}
-                </div>
-                <div className="bill-filter-row bill-filter-row-date-sort">
-                  <label className="bill-filter-label" htmlFor={`bill-date-sort-${billId}`}>
-                    Date order
-                  </label>
-                  <select
-                    id={`bill-date-sort-${billId}`}
-                    className="bill-filter-input bill-filter-select"
-                    value={dateSort}
-                    onChange={(e) => setDateSort(e.target.value)}
-                  >
-                    <option value="none">Bill order (default)</option>
-                    <option value="asc">Oldest first (ascending)</option>
-                    <option value="desc">Newest first (descending)</option>
-                  </select>
-                  {dateSortActive ? (
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm bill-filter-clear"
-                      onClick={() => setDateSort('none')}
-                    >
-                      Reset date order
-                    </button>
-                  ) : null}
-                </div>
-                <div className="bill-filter-row bill-filter-row-invoice-sort">
-                  <label className="bill-filter-label" htmlFor={`bill-invoice-sort-${billId}`}>
-                    Invoice no
-                  </label>
-                  <select
-                    id={`bill-invoice-sort-${billId}`}
-                    className="bill-filter-input bill-filter-select"
-                    value={invoiceSort}
-                    onChange={(e) => setInvoiceSort(e.target.value)}
-                  >
-                    <option value="none">Bill order (default)</option>
-                    <option value="asc">Ascending (low → high)</option>
-                    <option value="desc">Descending (high → low)</option>
-                  </select>
-                  {invoiceSortActive ? (
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm bill-filter-clear"
-                      onClick={() => setInvoiceSort('none')}
-                    >
-                      Reset invoice order
-                    </button>
-                  ) : null}
-                </div>
-                {tableFiltersActive ? (
-                  <div className="bill-filter-row bill-filter-row-summary">
-                    <span className="bill-filter-summary text-muted">
-                      {[
-                        vehicleFilterActive
-                          ? `Showing ${vehicleFilteredEntries.length} of ${entries.length} trip${entries.length === 1 ? '' : 's'}`
-                          : null,
-                        dateSort === 'asc' ? 'Date: oldest → newest' : null,
-                        dateSort === 'desc' ? 'Date: newest → oldest' : null,
-                        invoiceSort === 'asc' ? 'Invoice: low → high' : null,
-                        invoiceSort === 'desc' ? 'Invoice: high → low' : null,
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm bill-filter-clear-all"
-                      onClick={() => {
-                        setVehicleFilter('')
-                        setDateSort('none')
-                        setInvoiceSort('none')
-                      }}
-                    >
-                      Clear all filters
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-              {vehicleFilterActive && vehicleFilteredEntries.length === 0 ? (
-                <p className="bill-filter-empty text-muted no-print" role="status">
-                  No trips match this vehicle filter. Clear the filter to see all rows.
-                </p>
-              ) : null}
               <TransportTable
-                entries={filteredEntries}
+                entries={entries}
                 editingId={editingId}
                 customColumns={customColumns}
                 onEdit={openEdit}
                 onDelete={handleDeleteEntry}
                 onSaveEntry={handleSaveEntry}
                 onCancelEdit={cancelEditEntry}
-                onReorderEntries={tableFiltersActive ? undefined : handleReorderEntries}
+                onReorderEntries={handleReorderEntries}
                 defaultRouteFrom={bill.route_from}
                 defaultRouteTo={bill.route_to}
                 rateType={rateType}

@@ -164,3 +164,44 @@ export function reorderEntriesByIndex(entries, fromIndex, toIndex) {
   next.splice(toIndex, 0, item)
   return next
 }
+
+let _newEntrySeq = 0
+
+/** Stable unique id for a new trip row (avoids collisions under rapid adds / sheet import). */
+export function newBillEntryId() {
+  return `entry-${Date.now()}-${++_newEntrySeq}-${Math.random().toString(36).slice(2, 11)}`
+}
+
+/**
+ * Drops duplicate `id`s (keeps first), assigns ids to rows missing them.
+ * Fixes broken Sr. no / React keys when data was corrupted or merged badly.
+ */
+export function dedupeBillEntries(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return entries
+  const seen = new Set()
+  let changed = false
+  const out = []
+  for (let i = 0; i < entries.length; i += 1) {
+    const e = entries[i]
+    if (!e || typeof e !== 'object') {
+      changed = true
+      continue
+    }
+    let id = e.id
+    if (id == null || id === '') {
+      changed = true
+      id = newBillEntryId()
+      out.push({ ...e, id })
+      seen.add(id)
+      continue
+    }
+    const idStr = String(id)
+    if (seen.has(idStr)) {
+      changed = true
+      continue
+    }
+    seen.add(idStr)
+    out.push(e)
+  }
+  return changed ? out : entries
+}

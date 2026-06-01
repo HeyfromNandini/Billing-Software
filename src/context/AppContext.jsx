@@ -18,8 +18,15 @@ import {
   cancelBillDriveSync,
   removeBillSheetFromDrive,
 } from '../sheets/billDriveSync'
+import { dedupeBillEntries } from '../utils/billing'
 
 const AppContext = createContext(null)
+
+/** Avoid `{ ...b, ...{ entries: undefined } }` wiping nested state from sloppy patches. */
+function omitUndefinedPatch(updates) {
+  if (!updates || typeof updates !== 'object') return {}
+  return Object.fromEntries(Object.entries(updates).filter(([, v]) => v !== undefined))
+}
 
 function applyRemotePayload(data, setSkipSave) {
   const recovered = mergeLocalClientsAndBillsIfFirestoreEmpty(data)
@@ -100,6 +107,24 @@ export function AppProvider({ children }) {
   useEffect(() => {
     registerDriveSyncContext(() => ({ companies, clients, patchBillDriveMeta }))
   }, [companies, clients, patchBillDriveMeta])
+
+  /** One-time clean of duplicate trip ids / missing ids after load (fixes Sr. no + ghost rows). */
+  useEffect(() => {
+    if (!hydrated) return
+    setBills((prev) => {
+      let any = false
+      const next = prev.map((b) => {
+        const raw = b.entries ?? []
+        const entries = dedupeBillEntries(raw)
+        if (entries !== raw) {
+          any = true
+          return { ...b, entries }
+        }
+        return b
+      })
+      return any ? next : prev
+    })
+  }, [hydrated])
 
   const driveBackfillBillIdsRef = useRef(new Set())
   useEffect(() => {
@@ -230,7 +255,7 @@ export function AppProvider({ children }) {
         client_location: bill.client_location ?? client?.location ?? '',
         route_from: bill.route_from ?? 'Kalamboli',
         route_to: bill.route_to ?? 'Khopoli',
-        entries: bill.entries ?? [],
+        entries: dedupeBillEntries(bill.entries ?? []),
         rate_type: bill.rate_type ?? 'variable',
         rate_fixed: bill.rate_fixed ?? 7500,
         rate_base_weight: bill.rate_base_weight ?? 27273,
@@ -244,11 +269,22 @@ export function AppProvider({ children }) {
     return id
   }, [clients])
 
-  const updateBill = useCallback((billId, updates) => {
+  const updateBill = useCallback((billId, updatesOrFn) => {
     setBills((prev) =>
       prev.map((b) => {
         if (b.id !== billId) return b
-        const merged = { ...b, ...updates }
+        const raw =
+          typeof updatesOrFn === 'function' ? updatesOrFn(b) : updatesOrFn
+        if (!raw || typeof raw !== 'object') return b
+        const updates = omitUndefinedPatch(raw)
+        if (Object.keys(updates).length === 0) return b
+        let merged = { ...b, ...updates }
+        if (Array.isArray(merged.entries)) {
+          const entries = dedupeBillEntries(merged.entries)
+          if (entries !== merged.entries) {
+            merged = { ...merged, entries }
+          }
+        }
         queueBillDriveSyncWithBill(merged)
         return merged
       })

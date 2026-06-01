@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { DEFAULT_ROUTE } from '../data/sampleEntries'
 import { calculateRateFromWeight, entryTripTotal, rowBalance } from '../utils/billing'
 import VehicleCombobox from './VehicleCombobox'
@@ -39,6 +39,7 @@ export default function EditableEntryRow({
   onSave,
   onCancel,
 }) {
+  const saveRowLockRef = useRef(false)
   const from = defaultRouteFrom ?? DEFAULT_ROUTE.from
   const to = defaultRouteTo ?? DEFAULT_ROUTE.to
 
@@ -74,6 +75,10 @@ export default function EditableEntryRow({
       advance: entry.advance ?? 0,
       custom: Object.keys(custom).length ? custom : (customColumns || []).reduce((acc, col) => ({ ...acc, [col.id]: '' }), {}),
     })
+  }, [entryId])
+
+  useEffect(() => {
+    saveRowLockRef.current = false
   }, [entryId])
 
   const handleBalanceChange = (e) => {
@@ -120,6 +125,8 @@ export default function EditableEntryRow({
 
   const handleSubmit = (e) => {
     e.preventDefault()
+    if (saveRowLockRef.current) return
+    saveRowLockRef.current = true
     const rateNum = Number(form.rate) || 0
     const totalNum =
       form.total === '' || form.total == null ? rateNum : Number(form.total) || 0
@@ -135,7 +142,12 @@ export default function EditableEntryRow({
       advance: Number(form.advance) || 0,
       custom: form.custom || {},
     }
-    onSave(payload, entry.id)
+    try {
+      onSave(payload, entry.id)
+    } catch (err) {
+      saveRowLockRef.current = false
+      throw err
+    }
   }
 
   const rowData = {

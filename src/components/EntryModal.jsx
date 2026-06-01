@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { DEFAULT_ROUTE } from '../data/sampleEntries'
 import { calculateRateFromWeight } from '../utils/billing'
 import VehicleCombobox from './VehicleCombobox'
@@ -18,6 +18,7 @@ const emptyForm = {
 }
 
 export default function EntryModal({ isOpen, editingEntry, customColumns = [], defaultRouteFrom, defaultRouteTo, rateType, rateFixed, rateRule, onClose, onSave }) {
+  const saveSubmitLockRef = useRef(false)
   const [form, setForm] = useState(emptyForm)
   const [entryRateType, setEntryRateType] = useState('fixed') // per-entry: fixed (default) or variable, follows bill rate rule
   const from = defaultRouteFrom ?? DEFAULT_ROUTE.from
@@ -56,6 +57,10 @@ export default function EntryModal({ isOpen, editingEntry, customColumns = [], d
       setForm(initial)
     }
   }, [isOpen, editingEntry?.id, from, to, rateFixed, rateType, rateRule])
+
+  useEffect(() => {
+    saveSubmitLockRef.current = false
+  }, [isOpen])
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -112,6 +117,8 @@ export default function EntryModal({ isOpen, editingEntry, customColumns = [], d
 
   const handleSubmit = (e) => {
     e.preventDefault()
+    if (saveSubmitLockRef.current) return
+    saveSubmitLockRef.current = true
     let rate = Number(form.rate) || 0
     if (entryRateType === 'variable' && rateRule && (form.weight === '' || form.weight == null)) {
       const ept = Number(rateRule.rate_extra_per_ton)
@@ -131,8 +138,13 @@ export default function EntryModal({ isOpen, editingEntry, customColumns = [], d
       advance: Number(form.advance) || 0,
       custom: form.custom || {},
     }
-    onSave(payload, editingEntry?.id)
-    onClose()
+    try {
+      onSave(payload, editingEntry?.id)
+      onClose()
+    } catch (err) {
+      saveSubmitLockRef.current = false
+      throw err
+    }
   }
 
   if (!isOpen) return null
