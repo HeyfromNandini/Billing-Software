@@ -2,28 +2,9 @@ import { useMemo, useRef, useEffect, useCallback, useState } from 'react'
 import { formatDate, rowTotal, rowBalance, displayEntryRate, entryHasNumericRate } from '../utils/billing'
 import EditableEntryRow from './EditableEntryRow'
 import { FIXED_HEADERS } from '../sheets/fixedHeaders.js'
+import { buildColumnLayout, buildPdfColumnLayout } from '../sheets/columnLayout.js'
 
-export { FIXED_HEADERS }
-
-/** Ignore tiny pointer jitter when finishing a drag (reduces accidental one-line moves). */
-const REORDER_DRAG_SLOP_PX = 20
-
-export function buildColumnLayout(customColumns) {
-  const layout = []
-  for (let pos = 1; pos <= 11; pos++) {
-    const customsAtPos = (customColumns || []).filter((c) => (Number(c.order) || 12) === pos)
-    customsAtPos.forEach((col) => layout.push({ type: 'custom', col }))
-    layout.push({ type: 'fixed', index: pos })
-  }
-  const customsAt12 = (customColumns || []).filter((c) => (Number(c.order) || 12) === 12)
-  customsAt12.forEach((col) => layout.push({ type: 'custom', col }))
-  layout.push({ type: 'action' })
-  return layout
-}
-
-export function buildPdfColumnLayout(customColumns) {
-  return buildColumnLayout(customColumns).filter((item) => item.type !== 'action')
-}
+export { FIXED_HEADERS, buildColumnLayout, buildPdfColumnLayout }
 
 /** Relative width weight for PDF colgroup (normalized to 100% in appendPdfColgroup). */
 function pdfColWeight(item) {

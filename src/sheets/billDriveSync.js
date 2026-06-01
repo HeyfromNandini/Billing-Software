@@ -1,6 +1,13 @@
 import { isDriveLayoutConfigured, companySpreadsheetId } from './config'
-import { syncBillSheet, deleteBillSheet } from './driveLayout'
-import { billSheetTitle, billToSheetRows } from './billSheetRows'
+import { syncBillSheet, deleteBillSheet, readBillSheet } from './driveLayout'
+import {
+  billSheetTitle,
+  legacyBillSheetTitle,
+  billToSheetRows,
+  parseBillFromSheetValues,
+  mergeEntryCustomFromSheetEntries,
+  mergeCustomColumnDefs,
+} from './billSheetRows'
 
 const timers = new Map()
 const latestByBillId = new Map()
@@ -9,6 +16,8 @@ let getDriveCtx = () => ({
   companies: [],
   clients: [],
   patchBillDriveMeta: () => {},
+  patchBillFromSheetPull: () => {},
+  patchClientCustomColumns: () => {},
 })
 
 /** Called from AppProvider whenever companies/clients change. */
@@ -41,13 +50,55 @@ export function queueBillDriveSyncWithBill(bill) {
   )
 }
 
+/** Read sheet tab and fill empty entry.custom fields before overwriting the tab. */
+async function mergeBillFromSheetBeforePush(bill, client, spreadsheetId) {
+  const names = [billSheetTitle(bill), legacyBillSheetTitle(bill)]
+  let values = null
+  for (const sheetName of names) {
+    const data = await readBillSheet({ spreadsheetId, sheetName })
+    if (data.ok && data.values?.length) {
+      values = data.values
+      break
+    }
+  }
+  if (!values) return { bill, client }
+
+  const parsed = parseBillFromSheetValues(values, client)
+  if (!parsed?.billPatch?.entries?.length) return { bill, client }
+
+  const mergedCols = mergeCustomColumnDefs(client.custom_columns, parsed.customColumns)
+  const clientChanged =
+    JSON.stringify(mergedCols) !== JSON.stringify(client.custom_columns ?? [])
+  const clientOut = clientChanged ? { ...client, custom_columns: mergedCols } : client
+
+  const ids = mergedCols.map((c) => c.id)
+  const { entries, changed } = mergeEntryCustomFromSheetEntries(
+    bill.entries || [],
+    parsed.billPatch.entries,
+    ids
+  )
+  if (!changed && !clientChanged) return { bill, client: clientOut }
+
+  const billOut = changed ? { ...bill, entries } : bill
+  const ctx = getDriveCtx()
+  if (clientChanged) ctx.patchClientCustomColumns?.(client.id, mergedCols)
+  if (changed) ctx.patchBillFromSheetPull?.(bill.id, entries)
+  return { bill: billOut, client: clientOut }
+}
+
 export async function flushBillToDrive(bill, companies, clients) {
   if (!isDriveLayoutConfigured()) return
   const client = clients.find((c) => c.id === bill.client_id)
   if (!client) return
   const spreadsheetId = companySpreadsheetId(bill.company_id)
   if (!spreadsheetId) return
-  const rows = billToSheetRows(bill, client)
+
+  const { bill: billToWrite, client: clientToWrite } = await mergeBillFromSheetBeforePush(
+    bill,
+    client,
+    spreadsheetId
+  )
+  const rows = billToSheetRows(billToWrite, clientToWrite)
   const json = await syncBillSheet({
     spreadsheetId,
     sheetName: billSheetTitle(bill),

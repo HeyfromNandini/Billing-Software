@@ -1,0 +1,38 @@
+{
+  "generatedAt": "2026-06-01T12:04:10.308Z",
+  "dryRun": true,
+  "appData": {
+    "billsBefore": 19,
+    "billsAfter": 19,
+    "removed": 0
+  },
+  "spreadsheets": [
+    {
+      "companyId": "aadarsh",
+      "envKey": "VITE_GOOGLE_SHEET_ID_AADARSH",
+      "spreadsheetId": "1-Eq_IFkXDKeMHCxHKKMb-GUy23L5QTsSjTN6yTEmpEU",
+      "billTabCount": 4,
+      "duplicateGroups": 0,
+      "keepCount": 4
+    },
+    {
+      "companyId": "deva",
+      "envKey": "VITE_GOOGLE_SHEET_ID_DEVA",
+      "spreadsheetId": "1DTER_peSip3Q505A32kH7calBJiqvHb_nA2BdtEzX4A",
+      "billTabCount": 0,
+      "duplicateGroups": 0,
+      "keepCount": 0
+    },
+    {
+      "companyId": "sangita",
+      "envKey": "VITE_GOOGLE_SHEET_ID_SANGITA",
+      "spreadsheetId": "1Tfiu_8ntOWsrxCuAmSoCf3UyeOgBzbpxqPxwoF3GSb4",
+      "billTabCount": 30,
+      "duplicateGroups": 0,
+      "keepCount": 30
+    }
+  ],
+  "tabsToDelete": [],
+  "deleted": [],
+  "errors": []
+}

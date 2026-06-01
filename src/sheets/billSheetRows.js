@@ -1,4 +1,5 @@
 import { FIXED_HEADERS } from './fixedHeaders.js'
+import { buildColumnLayout } from './columnLayout.js'
 import { rowTotal, rowBalance, displayEntryRate } from '../utils/billing.js'
 
 /** Row 1 col A — new layout: col B is version; bill fields are label/value rows below. */
@@ -6,6 +7,20 @@ export const SHEET_SYNC_MARKER = '__BILL_SYNC_V3__'
 
 /** Legacy tabs still parse (JSON in B1 + title row). */
 export const SHEET_SYNC_MARKER_V2 = '__BILL_SYNC_V2__'
+
+/** Parse `Bill-{number}` or `Bill-{number}__{billId}` worksheet title. */
+export function parseBillMetaFromTabTitle(tabTitle) {
+  const raw = String(tabTitle || '')
+  const withoutPrefix = raw.replace(/^Bill-/i, '')
+  const sep = withoutPrefix.indexOf('__')
+  if (sep >= 0) {
+    return {
+      billNumber: withoutPrefix.slice(0, sep),
+      billId: withoutPrefix.slice(sep + 2) || null,
+    }
+  }
+  return { billNumber: withoutPrefix, billId: null }
+}
 
 /** Legacy tab name (bill number only) — used as read fallback after unique titles shipped. */
 export function legacyBillSheetTitle(bill) {
@@ -27,9 +42,9 @@ export function billSheetTitle(bill) {
 }
 
 function sortedCustomColumns(client) {
-  return [...(client?.custom_columns || [])].sort(
-    (a, b) => (Number(a.order) || 0) - (Number(b.order) || 0)
-  )
+  return [...(client?.custom_columns || [])]
+    .map((c) => ({ ...c, order: effectiveCustomColumnOrder(c) }))
+    .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0))
 }
 
 function slugColumnId(name) {
@@ -42,11 +57,28 @@ function slugColumnId(name) {
 }
 
 /** Place common extra columns next to related fixed columns in the table. */
-function defaultOrderForCustomHeader(name) {
+export function defaultOrderForCustomHeader(name) {
   const n = normHeader(name)
-  if (n.includes('invoice') && (n.includes('2') || n.includes('second') || n.endsWith(' 2'))) return 5
+  if (isSecondaryInvoiceHeader(n)) return 5
   if (n.includes('lr') || n.includes('challan')) return 6
   return 12
+}
+
+/** Second invoice column (Invoice 2 / INVOICE NO 2) — not the primary "Invoice no" field. */
+export function isSecondaryInvoiceHeader(normName) {
+  const n = normHeader(normName)
+  if (!n.startsWith('invoice')) return false
+  if (n.includes('second')) return true
+  if (/\b2\b/.test(n) || /no\s*2\b/.test(n) || /#\s*2\b/.test(n)) return true
+  if (n.endsWith(' 2')) return true
+  return false
+}
+
+function effectiveCustomColumnOrder(col) {
+  const def = defaultOrderForCustomHeader(col.name || col.id || '')
+  const raw = Number(col.order)
+  if (def !== 12) return def
+  return Number.isFinite(raw) && raw >= 1 ? Math.min(raw, 12) : 12
 }
 
 function entryMatchKey(e) {
@@ -114,7 +146,7 @@ export function discoverCustomColumnsFromHeaders(headers, extraHeaderIndices, ex
         id = `${baseId}-${n}`
       }
       usedIds.add(id)
-      col = { id, name, order: defaultOrderForCustomHeader(name) }
+      col = { id, name, order: effectiveCustomColumnOrder({ name, order: defaultOrderForCustomHeader(name) }) }
       existingByNorm.set(norm, col)
     }
     out.push({ col, headerIdx })
@@ -129,11 +161,10 @@ export function mergeCustomColumnDefs(existing = [], incoming = []) {
     if (!c?.name && !c?.id) continue
     const norm = normHeader(c.name || c.id || '')
     if (!norm || byNorm.has(norm)) continue
-    const orderRaw = Number(c.order) || defaultOrderForCustomHeader(c.name)
     byNorm.set(norm, {
       id: c.id,
       name: String(c.name || c.id).trim(),
-      order: Math.max(1, Math.min(orderRaw, 12)),
+      order: effectiveCustomColumnOrder(c),
     })
   }
   return [...byNorm.values()]
@@ -185,10 +216,46 @@ const SHEET_INFO_LABELS = {
  * @param {object} bill
  * @param {object} [client]
  */
+function fixedSheetCell(bill, entry, fixedIndex, rowIndex) {
+  switch (fixedIndex) {
+    case 1:
+      return rowIndex + 1
+    case 2:
+      return entry.date ?? ''
+    case 3:
+      return entry.vehicle_number ?? ''
+    case 4:
+      return entry.invoice_number ?? ''
+    case 5:
+      return entry.from ?? ''
+    case 6:
+      return entry.to ?? ''
+    case 7:
+      return entry.weight ?? ''
+    case 8:
+      return entryRateCellForSheet(bill, entry)
+    case 9:
+      return rowTotal(entry)
+    case 10:
+      return entry.advance ?? ''
+    case 11:
+      return rowBalance(entry)
+    default:
+      return ''
+  }
+}
+
+/** Same column order as the bill UI (custom columns by `order`, not all appended at the end). */
 export function billToSheetRows(bill, client) {
   const customs = sortedCustomColumns(client)
-  const customLabels = customs.map((c) => c.name || c.id || 'Custom')
-  const headerRow = [...FIXED_HEADERS, ...customLabels]
+  const layout = buildColumnLayout(customs)
+  const headerRow = layout
+    .filter((item) => item.type !== 'action')
+    .map((item) =>
+      item.type === 'fixed'
+        ? FIXED_HEADERS[item.index - 1]
+        : item.col.name || item.col.id || 'Custom'
+    )
   const entries = Array.isArray(bill.entries) ? bill.entries : []
 
   const detailRows = [
@@ -209,23 +276,14 @@ export function billToSheetRows(bill, client) {
 
   for (let i = 0; i < entries.length; i += 1) {
     const e = entries[i]
-    const total = rowTotal(e)
-    const bal = rowBalance(e)
-    const base = [
-      i + 1,
-      e.date ?? '',
-      e.vehicle_number ?? '',
-      e.invoice_number ?? '',
-      e.from ?? '',
-      e.to ?? '',
-      e.weight ?? '',
-      entryRateCellForSheet(bill, e),
-      total,
-      e.advance ?? '',
-      bal,
-    ]
-    const customVals = customs.map((c) => (e.custom && e.custom[c.id]) ?? '')
-    rows.push([...base, ...customVals])
+    const dataRow = layout
+      .filter((item) => item.type !== 'action')
+      .map((item) =>
+        item.type === 'fixed'
+          ? fixedSheetCell(bill, e, item.index, i)
+          : (e.custom && e.custom[item.col.id]) ?? ''
+      )
+    rows.push(dataRow)
   }
 
   return rows
@@ -244,7 +302,10 @@ function headerToFixedKey(h) {
   if (n === 'sr. no' || n === 'sr no' || n === 'sr.no' || n === 'sr' || n === 'sr no.') return 'sr'
   if (n === 'date') return 'date'
   if (n.startsWith('vehicle')) return 'vehicle'
-  if (n.startsWith('invoice')) return 'invoice'
+  if (n.startsWith('invoice')) {
+    if (isSecondaryInvoiceHeader(n)) return undefined
+    return 'invoice'
+  }
   if (n === 'from') return 'from'
   if (n === 'to') return 'to'
   if (n === 'weight') return 'weight'

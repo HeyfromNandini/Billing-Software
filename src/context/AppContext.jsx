@@ -125,9 +125,28 @@ export function AppProvider({ children }) {
     setBills((prev) => prev.map((b) => (b.id === billId ? { ...b, ...updates } : b)))
   }, [])
 
+  /** Pull custom cells from sheet into app state without queuing another Drive push. */
+  const patchBillFromSheetPull = useCallback((billId, entries) => {
+    setBills((prev) =>
+      prev.map((b) => (b.id === billId ? { ...b, entries: dedupeBillEntries(entries) } : b))
+    )
+  }, [])
+
+  const patchClientCustomColumns = useCallback((clientId, custom_columns) => {
+    setClients((prev) =>
+      prev.map((c) => (c.id === clientId ? { ...c, custom_columns } : c))
+    )
+  }, [])
+
   useEffect(() => {
-    registerDriveSyncContext(() => ({ companies, clients, patchBillDriveMeta }))
-  }, [companies, clients, patchBillDriveMeta])
+    registerDriveSyncContext(() => ({
+      companies,
+      clients,
+      patchBillDriveMeta,
+      patchBillFromSheetPull,
+      patchClientCustomColumns,
+    }))
+  }, [companies, clients, patchBillDriveMeta, patchBillFromSheetPull, patchClientCustomColumns])
 
   /** One-time clean of duplicate bills / trip ids after load. */
   useEffect(() => {
