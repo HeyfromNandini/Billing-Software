@@ -1,9 +1,64 @@
 import { google } from 'googleapis'
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { resolve } from 'path'
 
 const APP_DATA_SHEET = 'AppData'
 const APP_DATA_RANGE = 'AppData!A1'
+/** Google Sheets max ~50k chars per cell; store large JSON across row 1 (A1, B1, …). */
+const APP_DATA_ROW_RANGE = 'AppData!A1:ZZ1'
+const APP_DATA_MAX_CELL_CHARS = 49000
+const APP_DATA_BACKUP_DIR = resolve(process.cwd(), 'backups', 'appdata')
+
+export class AppDataWriteRejectedError extends Error {
+  constructor(message, details = {}) {
+    super(message)
+    this.name = 'AppDataWriteRejectedError'
+    this.details = details
+  }
+}
+
+function appDataCounts(data) {
+  if (data?.masterDisabled) {
+    return { companies: 0, clients: 0, bills: 0, masterDisabled: true }
+  }
+  return {
+    companies: Array.isArray(data?.companies) ? data.companies.length : 0,
+    clients: Array.isArray(data?.clients) ? data.clients.length : 0,
+    bills: Array.isArray(data?.bills) ? data.bills.length : 0,
+    masterDisabled: false,
+  }
+}
+
+function timestampForBackupFilename() {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
+/** Local timestamped snapshot of AppData before each write (best-effort; may fail on read-only hosts). */
+function writeAppDataBackupFile(existing, meta = {}) {
+  try {
+    mkdirSync(APP_DATA_BACKUP_DIR, { recursive: true })
+    const file = resolve(APP_DATA_BACKUP_DIR, `appdata-backup-${timestampForBackupFilename()}.json`)
+    writeFileSync(
+      file,
+      `${JSON.stringify(
+        {
+          backedUpAt: new Date().toISOString(),
+          masterSpreadsheetId: getMasterSpreadsheetId(),
+          ...meta,
+          previous: existing,
+        },
+        null,
+        2
+      )}\n`,
+      'utf8'
+    )
+    console.log(`[billing-api] AppData backup saved: ${file}`)
+    return file
+  } catch (e) {
+    console.warn('[billing-api] AppData local backup failed:', e?.message || String(e))
+    return null
+  }
+}
 
 function quoteSheetRange(sheetName) {
   const q = String(sheetName).replace(/'/g, "''")
@@ -87,18 +142,65 @@ async function ensureAppDataSheet_(sheets, spreadsheetId) {
   })
 }
 
+function chunkString(str, maxLen) {
+  const chunks = []
+  for (let i = 0; i < str.length; i += maxLen) {
+    chunks.push(str.slice(i, i + maxLen))
+  }
+  return chunks
+}
+
+function joinAppDataRow(row) {
+  if (!row?.length) return ''
+  return row.map((c) => String(c ?? '')).join('')
+}
+
+function parseAppDataCell(cell) {
+  if (!cell || !String(cell).trim()) {
+    return {
+      data: { companies: [], clients: [], bills: [] },
+      parseOk: true,
+      empty: true,
+    }
+  }
+  try {
+    const parsed = JSON.parse(String(cell))
+    return {
+      data: {
+        companies: Array.isArray(parsed.companies) ? parsed.companies : [],
+        clients: Array.isArray(parsed.clients) ? parsed.clients : [],
+        bills: Array.isArray(parsed.bills) ? parsed.bills : [],
+      },
+      parseOk: true,
+      empty: false,
+    }
+  } catch {
+    return {
+      data: { companies: [], clients: [], bills: [] },
+      parseOk: false,
+      empty: false,
+    }
+  }
+}
+
+async function readAppDataRowFromSheets_(spreadsheetId) {
+  const { sheets } = await getGoogleClients()
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: APP_DATA_ROW_RANGE,
+  })
+  return joinAppDataRow(res.data.values?.[0])
+}
+
 export async function readAppData() {
   const spreadsheetId = getMasterSpreadsheetId()
   if (!spreadsheetId) {
     return { masterDisabled: true }
   }
-  const { sheets } = await getGoogleClients()
-  let res
   try {
-    res = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: APP_DATA_RANGE,
-    })
+    const cell = await readAppDataRowFromSheets_(spreadsheetId)
+    const { data } = parseAppDataCell(cell)
+    return data
   } catch (e) {
     const status = e?.response?.status
     const msg = (e?.message || String(e)).toLowerCase()
@@ -112,41 +214,86 @@ export async function readAppData() {
     }
     throw e
   }
-  const cell = res.data.values?.[0]?.[0]
-  if (!cell || !String(cell).trim()) {
-    return { companies: [], clients: [], bills: [] }
-  }
-  try {
-    const data = JSON.parse(String(cell))
-    return {
-      companies: Array.isArray(data.companies) ? data.companies : [],
-      clients: Array.isArray(data.clients) ? data.clients : [],
-      bills: Array.isArray(data.bills) ? data.bills : [],
-    }
-  } catch {
-    return { companies: [], clients: [], bills: [] }
-  }
 }
 
-export async function saveAppData(body) {
+export async function saveAppData(body, options = {}) {
   const spreadsheetId = getMasterSpreadsheetId()
   if (!spreadsheetId) {
     return { ok: true, skipped: true }
   }
+
+  const force =
+    options.force === true ||
+    body?.__appDataForce === true ||
+    body?.__force === true
+
+  const payload = {
+    companies: body?.companies || [],
+    clients: body?.clients || [],
+    bills: body?.bills || [],
+  }
+
+  let existing = { companies: [], clients: [], bills: [] }
+  let existingMeta = { parseOk: true, empty: true }
+  try {
+    const cell = await readAppDataRowFromSheets_(spreadsheetId)
+    existingMeta = parseAppDataCell(cell)
+    existing = existingMeta.data
+  } catch (e) {
+    if (!force) {
+      const message =
+        `AppData write rejected: could not read existing AppData (${e?.message || String(e)}). ` +
+        'Pass force to override.'
+      console.warn(`[billing-api] ${message}`)
+      throw new AppDataWriteRejectedError(message, { readError: e?.message || String(e) })
+    }
+    console.warn('[billing-api] AppData read failed; proceeding with force:', e?.message || e)
+  }
+
+  const existingCounts = appDataCounts(existing)
+  const incomingCounts = appDataCounts(payload)
+
+  if (!existingMeta.parseOk && !force) {
+    const message =
+      'AppData write rejected: existing AppData cell is present but could not be parsed. ' +
+      'Pass force (header x-billing-app-data-force: 1, query ?force=1, or body __appDataForce: true) to override.'
+    console.warn(`[billing-api] ${message}`)
+    throw new AppDataWriteRejectedError(message, { incoming: incomingCounts, parseOk: false })
+  }
+
+  if (!existingMeta.empty && existingCounts.bills > incomingCounts.bills && !force) {
+    const message =
+      `AppData write rejected: existing has ${existingCounts.bills} bills but incoming payload has ${incomingCounts.bills}. ` +
+      'Pass force (header x-billing-app-data-force: 1, query ?force=1, or body __appDataForce: true) to override.'
+    console.warn(`[billing-api] ${message}`)
+    console.warn(
+      `[billing-api] Counts — existing: ${existingCounts.companies} companies, ${existingCounts.clients} clients, ${existingCounts.bills} bills; ` +
+        `incoming: ${incomingCounts.companies} companies, ${incomingCounts.clients} clients, ${incomingCounts.bills} bills`
+    )
+    throw new AppDataWriteRejectedError(message, {
+      existing: existingCounts,
+      incoming: incomingCounts,
+    })
+  }
+
+  writeAppDataBackupFile(existing, { incomingCounts, forced: force })
+
   const { sheets } = await getGoogleClients()
   await ensureAppDataSheet_(sheets, spreadsheetId)
-  const payload = {
-    companies: body.companies || [],
-    clients: body.clients || [],
-    bills: body.bills || [],
-  }
+  const json = JSON.stringify(payload)
+  const chunks = chunkString(json, APP_DATA_MAX_CELL_CHARS)
+  const q = quoteSheetRange(APP_DATA_SHEET)
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId,
+    range: `${q}!A1:ZZ1`,
+  })
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: APP_DATA_RANGE,
+    range: `${q}!A1`,
     valueInputOption: 'RAW',
-    requestBody: { values: [[JSON.stringify(payload)]] },
+    requestBody: { values: [chunks] },
   })
-  return { ok: true }
+  return { ok: true, backupCounts: existingCounts, writtenCounts: incomingCounts, forced: force }
 }
 
 export async function getSpreadsheetMeta(params) {

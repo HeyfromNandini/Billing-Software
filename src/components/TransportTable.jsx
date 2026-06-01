@@ -1,23 +1,12 @@
 import { useMemo, useRef, useEffect, useCallback, useState } from 'react'
 import { formatDate, rowTotal, rowBalance, displayEntryRate, entryHasNumericRate } from '../utils/billing'
 import EditableEntryRow from './EditableEntryRow'
+import { FIXED_HEADERS } from '../sheets/fixedHeaders.js'
+
+export { FIXED_HEADERS }
 
 /** Ignore tiny pointer jitter when finishing a drag (reduces accidental one-line moves). */
 const REORDER_DRAG_SLOP_PX = 20
-
-export const FIXED_HEADERS = [
-  'Sr. no',
-  'Date',
-  'Vehicle No',
-  'Invoice no',
-  'From',
-  'To',
-  'Weight',
-  'Rate',
-  'Total',
-  'Advance',
-  'Balance',
-]
 
 export function buildColumnLayout(customColumns) {
   const layout = []

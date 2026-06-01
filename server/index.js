@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url'
 import {
   readAppData,
   saveAppData,
+  AppDataWriteRejectedError,
   handleRpc,
   getSpreadsheetMeta,
   readBillSheet,
@@ -29,7 +30,7 @@ app.use(
   cors({
     origin: true,
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'x-billing-api-secret'],
+    allowedHeaders: ['Content-Type', 'x-billing-api-secret', 'x-billing-app-data-force'],
   })
 )
 
@@ -72,9 +73,24 @@ app.get('/api/billing/app-data', requireBillingSecret, async (_req, res) => {
 
 app.post('/api/billing/app-data', requireBillingSecret, jsonBody, async (req, res) => {
   try {
-    const out = await saveAppData(req.body || {})
+    const force =
+      req.query.force === '1' ||
+      req.query.force === 'true' ||
+      req.headers['x-billing-app-data-force'] === '1'
+    const out = await saveAppData(req.body || {}, { force })
     noStoreJson(res, () => res.json(out))
   } catch (e) {
+    if (e instanceof AppDataWriteRejectedError) {
+      console.warn('[billing-api] POST app-data rejected:', e.message)
+      noStoreJson(res, () =>
+        res.status(409).json({
+          ok: false,
+          error: e.message,
+          details: e.details,
+        })
+      )
+      return
+    }
     console.error('[billing-api] POST app-data', e)
     noStoreJson(res, () =>
       res.status(500).json({

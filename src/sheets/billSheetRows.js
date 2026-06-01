@@ -1,5 +1,5 @@
-import { FIXED_HEADERS } from '../components/TransportTable'
-import { rowTotal, rowBalance, displayEntryRate } from '../utils/billing'
+import { FIXED_HEADERS } from './fixedHeaders.js'
+import { rowTotal, rowBalance, displayEntryRate } from '../utils/billing.js'
 
 /** Row 1 col A — new layout: col B is version; bill fields are label/value rows below. */
 export const SHEET_SYNC_MARKER = '__BILL_SYNC_V3__'
