@@ -172,6 +172,63 @@ export function newBillEntryId() {
   return `entry-${Date.now()}-${++_newEntrySeq}-${Math.random().toString(36).slice(2, 11)}`
 }
 
+/** Prefer real bill ids and rows with trip data when collapsing duplicate bills. */
+export function billKeepScore(bill) {
+  const entryCount = Array.isArray(bill?.entries) ? bill.entries.length : 0
+  const id = String(bill?.id ?? '')
+  let idBonus = 50
+  if (/^bill-\d+$/.test(id)) idBonus = 100
+  else if (id.startsWith('bill-rebuilt')) idBonus = 10
+  return entryCount * 1000 + idBonus
+}
+
+/**
+ * Removes duplicate bills: same `id` (keep best row), then same company + bill number (keep best).
+ */
+export function dedupeBills(bills) {
+  if (!Array.isArray(bills) || bills.length <= 1) return bills
+
+  const bestById = new Map()
+  for (const b of bills) {
+    if (!b?.id) continue
+    const id = String(b.id)
+    const cur = bestById.get(id)
+    if (!cur || billKeepScore(b) > billKeepScore(cur)) bestById.set(id, b)
+  }
+
+  const bestByNumber = new Map()
+  for (const b of bestById.values()) {
+    const num = String(b.bill_number ?? '').trim()
+    if (!b.company_id || !num) continue
+    const key = `${b.company_id}\0${num}`
+    const cur = bestByNumber.get(key)
+    if (!cur || billKeepScore(b) > billKeepScore(cur)) bestByNumber.set(key, b)
+  }
+
+  const winners = new Set()
+  for (const b of bestById.values()) {
+    const num = String(b.bill_number ?? '').trim()
+    if (!b.company_id || !num) {
+      winners.add(String(b.id))
+      continue
+    }
+    const key = `${b.company_id}\0${num}`
+    if (bestByNumber.get(key)?.id === b.id) winners.add(String(b.id))
+  }
+
+  const out = []
+  const emitted = new Set()
+  for (const b of bills) {
+    const id = b?.id != null ? String(b.id) : null
+    if (!id || emitted.has(id) || !winners.has(id)) continue
+    emitted.add(id)
+    const entries = dedupeBillEntries(b.entries ?? [])
+    out.push(entries === b.entries ? b : { ...b, entries })
+  }
+
+  return out.length === bills.length && out.every((b, i) => b === bills[i]) ? bills : out
+}
+
 /**
  * Drops duplicate `id`s (keeps first), assigns ids to rows missing them.
  * Fixes broken Sr. no / React keys when data was corrupted or merged badly.

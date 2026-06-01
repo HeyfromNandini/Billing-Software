@@ -20,8 +20,11 @@ import {
   saveAppData,
   getMasterSpreadsheetId,
 } from '../server/googleHandlers.js'
-import { parseBillFromSheetValues } from '../src/sheets/billSheetRows.js'
-import { dedupeBillEntries } from '../src/utils/billing.js'
+import {
+  parseBillFromSheetValues,
+  mergeCustomColumnDefs,
+} from '../src/sheets/billSheetRows.js'
+import { dedupeBillEntries, dedupeBills } from '../src/utils/billing.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = resolve(__dirname, '..')
@@ -279,6 +282,7 @@ async function rebuildFromCompanySheets() {
           spreadsheetId,
           tabTitle,
           billPatch: parsed.billPatch,
+          customColumns: parsed.customColumns ?? [],
         })
       } catch (e) {
         unparsedTabs.push({
@@ -299,9 +303,10 @@ async function rebuildFromCompanySheets() {
     const location = String(row.billPatch.client_location ?? '').trim()
     const key = clientDedupeKey(row.companyId, name, location)
 
-    if (!clientsByKey.has(key)) {
+    let client = clientsByKey.get(key)
+    if (!client) {
       const id = slugId('client-rebuilt', key)
-      const client = {
+      client = {
         id,
         company_id: row.companyId,
         client_name: name || 'Unknown client',
@@ -311,20 +316,27 @@ async function rebuildFromCompanySheets() {
       clientsByKey.set(key, client)
       clients.push(client)
     }
+    if (row.customColumns?.length) {
+      client.custom_columns = mergeCustomColumnDefs(client.custom_columns, row.customColumns)
+    }
   }
 
-  const bills = billRecords.map((row) => {
-    const name = String(row.billPatch.client_name ?? '').trim()
-    const location = String(row.billPatch.client_location ?? '').trim()
-    const key = clientDedupeKey(row.companyId, name, location)
-    const client = clientsByKey.get(key)
-    return buildBillRecord({
-      companyId: row.companyId,
-      tabTitle: row.tabTitle,
-      billPatch: row.billPatch,
-      clientId: client?.id || slugId('client-rebuilt', key),
+  const bills = dedupeBills(
+    billRecords.map((row) => {
+      const name = String(row.billPatch.client_name ?? '').trim()
+      const location = String(row.billPatch.client_location ?? '').trim()
+      const key = clientDedupeKey(row.companyId, name, location)
+      const client = clientsByKey.get(key)
+      return stripInternalFields(
+        buildBillRecord({
+          companyId: row.companyId,
+          tabTitle: row.tabTitle,
+          billPatch: row.billPatch,
+          clientId: client?.id || slugId('client-rebuilt', key),
+        })
+      )
     })
-  })
+  )
 
   const companies = mergeCompaniesWithDefaults(MY_COMPANIES)
 
@@ -341,7 +353,7 @@ async function rebuildFromCompanySheets() {
     unparsedTabs,
     companies,
     clients,
-    bills: bills.map(stripInternalFields),
+    bills: bills,
   }
 }
 

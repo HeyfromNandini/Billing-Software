@@ -9,6 +9,7 @@
     "dev:api": "node server/index.js",
     "build": "node scripts/build.js",
     "rebuild-app-data": "node scripts/rebuild-app-data.js",
+    "dedupe-app-data": "node scripts/dedupe-app-data.js",
     "preview": "concurrently -n vite,api -c cyan,magenta \"npm run preview:vite\" \"npm run dev:api\"",
     "preview:vite": "vite preview"
   },

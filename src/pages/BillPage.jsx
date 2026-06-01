@@ -34,6 +34,8 @@ import {
   billSheetTitle,
   legacyBillSheetTitle,
   parseBillFromSheetValues,
+  mergeCustomColumnDefs,
+  mergeEntryCustomFromSheetEntries,
   billContentDiffersFromPatch,
 } from '../sheets/billSheetRows'
 import { flushBillToDriveNow, queueBillDriveSyncWithBill } from '../sheets/billDriveSync'
@@ -138,6 +140,57 @@ export default function BillPage() {
     setSheetConflict(null)
   }, [billId])
 
+  /** Pull custom-column cell values from this bill's Google tab when cloud/local rows are missing them. */
+  useEffect(() => {
+    if (!isDriveLayoutConfigured() || !bill || !client) return undefined
+    const sid = companySpreadsheetId(bill.company_id)
+    if (!sid) return undefined
+
+    let cancelled = false
+    ;(async () => {
+      const colIds = (client.custom_columns || []).map((c) => c.id)
+      const missingCustom =
+        colIds.length === 0 ||
+        (bill.entries || []).some((e) => colIds.some((id) => !String(e.custom?.[id] ?? '').trim()))
+      if (!missingCustom) return
+
+      const names = [billSheetTitle(bill), legacyBillSheetTitle(bill)]
+      let values = null
+      for (const sheetName of names) {
+        const data = await readBillSheet({ spreadsheetId: sid, sheetName })
+        if (cancelled) return
+        if (data.ok && data.values?.length) {
+          values = data.values
+          break
+        }
+      }
+      if (!values || cancelled) return
+
+      const parsed = parseBillFromSheetValues(values, client)
+      if (!parsed?.billPatch?.entries?.length) return
+
+      if (parsed.customColumns?.length) {
+        const mergedCols = mergeCustomColumnDefs(client.custom_columns, parsed.customColumns)
+        if (JSON.stringify(mergedCols) !== JSON.stringify(client.custom_columns ?? [])) {
+          updateClient(client.id, { custom_columns: mergedCols })
+        }
+      }
+
+      const ids = mergeCustomColumnDefs(client.custom_columns, parsed.customColumns).map((c) => c.id)
+      const { entries: mergedEntries, changed } = mergeEntryCustomFromSheetEntries(
+        bill.entries || [],
+        parsed.billPatch.entries,
+        ids
+      )
+      if (!changed || cancelled) return
+      updateBill(bill.id, { entries: mergedEntries })
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [billId, bill?.id, client?.id, client?.custom_columns, bill?.entries, updateBill, updateClient])
+
   useEffect(() => {
     if (!isDriveLayoutConfigured() || !bill || !client) return undefined
     const sid0 = companySpreadsheetId(bill.company_id)
@@ -205,6 +258,7 @@ export default function BillPage() {
         setSheetConflict({
           forBillId: snapshotBillId,
           billPatch: parsed.billPatch,
+          customColumns: parsed.customColumns ?? [],
           fileLastUpdated: data.fileLastUpdated,
         })
       } catch (e) {
@@ -756,6 +810,12 @@ export default function BillPage() {
     if (sheetConflict.forBillId != null && sheetConflict.forBillId !== billId) return
     touchLocal()
     const conflict = sheetConflict
+    if (client && conflict.customColumns?.length) {
+      const merged = mergeCustomColumnDefs(client.custom_columns, conflict.customColumns)
+      if (JSON.stringify(merged) !== JSON.stringify(client.custom_columns ?? [])) {
+        updateClient(client.id, { custom_columns: merged })
+      }
+    }
     updateBill(billId, (b) => {
       const patch = { ...conflict.billPatch }
       if (Array.isArray(patch.entries) && Array.isArray(b.entries) && patch.entries.length === b.entries.length) {
@@ -767,7 +827,7 @@ export default function BillPage() {
       patchBillDriveMeta(billId, { drive_file_updated_at: conflict.fileLastUpdated })
     }
     setSheetConflict(null)
-  }, [sheetConflict, bill, billId, updateBill, patchBillDriveMeta, touchLocal])
+  }, [sheetConflict, bill, client, billId, updateBill, updateClient, patchBillDriveMeta, touchLocal])
 
   const handlePushToSheet = useCallback(async () => {
     const b = billRef.current

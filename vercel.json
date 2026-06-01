@@ -1,13 +1,18 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "functions": {
+    "api/billing.js": {
+      "maxDuration": 60
+    }
+  },
   "rewrites": [
     {
-      "source": "/api/billing/(.*)",
-      "destination": "/api/billing/$1"
+      "source": "/api/billing/:path*",
+      "destination": "/api/billing"
     },
     {
-      "source": "/(.*)",
+      "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
   ]

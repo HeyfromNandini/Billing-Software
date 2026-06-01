@@ -18,7 +18,7 @@ import {
   cancelBillDriveSync,
   removeBillSheetFromDrive,
 } from '../sheets/billDriveSync'
-import { dedupeBillEntries } from '../utils/billing'
+import { dedupeBillEntries, dedupeBills } from '../utils/billing'
 
 const AppContext = createContext(null)
 
@@ -51,9 +51,30 @@ export function AppProvider({ children }) {
   const [driveSyncError, setDriveSyncError] = useState(null)
   const [sheetsConnectionError, setSheetsConnectionError] = useState(null)
   const skipSaveFromRemote = useRef(false)
+  const forceNextSaveRef = useRef(false)
+  const latestAppStateRef = useRef({ companies: [], clients: [], bills: [] })
+  const saveGenerationRef = useRef(0)
 
   const clearDriveSyncError = useCallback(() => setDriveSyncError(null), [])
   const clearSheetsConnectionError = useCallback(() => setSheetsConnectionError(null), [])
+
+  useEffect(() => {
+    latestAppStateRef.current = { companies, clients, bills }
+  }, [companies, clients, bills])
+
+  const persistAppStateNow = useCallback(async (patch, { force = false } = {}) => {
+    const snap = latestAppStateRef.current
+    const payload = {
+      companies: patch.companies ?? snap.companies,
+      clients: patch.clients ?? snap.clients,
+      bills: patch.bills ?? snap.bills,
+    }
+    latestAppStateRef.current = payload
+    saveAppStateToLocalStorage(payload.companies, payload.clients, payload.bills)
+    if (!isGoogleSheetsConfigured()) return
+    clearSheetsConnectionError()
+    await saveAppDataToSheets(payload, { force })
+  }, [clearSheetsConnectionError])
 
   useEffect(() => {
     let cancelled = false
@@ -108,10 +129,12 @@ export function AppProvider({ children }) {
     registerDriveSyncContext(() => ({ companies, clients, patchBillDriveMeta }))
   }, [companies, clients, patchBillDriveMeta])
 
-  /** One-time clean of duplicate trip ids / missing ids after load (fixes Sr. no + ghost rows). */
+  /** One-time clean of duplicate bills / trip ids after load. */
   useEffect(() => {
     if (!hydrated) return
     setBills((prev) => {
+      const deduped = dedupeBills(prev)
+      if (deduped !== prev) return deduped
       let any = false
       const next = prev.map((b) => {
         const raw = b.entries ?? []
@@ -149,9 +172,16 @@ export function AppProvider({ children }) {
       saveAppStateToLocalStorage(companies, clients, bills)
       return
     }
+    const generation = ++saveGenerationRef.current
     const t = setTimeout(() => {
+      if (generation !== saveGenerationRef.current) return
       saveAppStateToLocalStorage(companies, clients, bills)
-      saveAppDataToSheets({ companies, clients, bills }).catch((e) => console.error('[Google Sheets save]', e))
+      const force = forceNextSaveRef.current
+      forceNextSaveRef.current = false
+      saveAppDataToSheets({ companies, clients, bills }, { force }).catch((e) => {
+        console.error('[Google Sheets save]', e)
+        setSheetsConnectionError(e?.message || String(e))
+      })
     }, 450)
     return () => clearTimeout(t)
   }, [hydrated, companies, clients, bills])
@@ -198,9 +228,10 @@ export function AppProvider({ children }) {
 
   const deleteClient = useCallback(
     (clientId) => {
-      const cli = clients.find((c) => c.id === clientId)
+      const snap = latestAppStateRef.current
+      const cli = snap.clients.find((c) => c.id === clientId)
       if (cli && isDriveLayoutConfigured()) {
-        bills
+        snap.bills
           .filter((b) => b.client_id === clientId)
           .forEach((b) => {
             void removeBillSheetFromDrive(b).catch((e) =>
@@ -208,10 +239,20 @@ export function AppProvider({ children }) {
             )
           })
       }
-      setClients((prev) => prev.filter((c) => c.id !== clientId))
-      setBills((prev) => prev.filter((b) => b.client_id !== clientId))
+      const nextClients = snap.clients.filter((c) => c.id !== clientId)
+      const nextBills = snap.bills.filter((b) => b.client_id !== clientId)
+      saveGenerationRef.current += 1
+      setClients(nextClients)
+      setBills(nextBills)
+      void persistAppStateNow(
+        { companies: snap.companies, clients: nextClients, bills: nextBills },
+        { force: true }
+      ).catch((e) => {
+        console.error('[Google Sheets save]', e)
+        setSheetsConnectionError(e?.message || String(e))
+      })
     },
-    [clients, bills]
+    [persistAppStateNow]
   )
 
   const getBillsByClient = useCallback(
@@ -293,16 +334,24 @@ export function AppProvider({ children }) {
 
   const deleteBill = useCallback(
     (billId) => {
-      const bill = bills.find((b) => b.id === billId)
+      const snap = latestAppStateRef.current
+      const bill = snap.bills.find((b) => b.id === billId)
       cancelBillDriveSync(billId)
+      driveBackfillBillIdsRef.current.delete(billId)
       if (bill) {
         void removeBillSheetFromDrive(bill).catch((e) =>
           console.error('[Drive] delete bill sheet', e)
         )
       }
-      setBills((prev) => prev.filter((b) => b.id !== billId))
+      const nextBills = snap.bills.filter((b) => b.id !== billId)
+      saveGenerationRef.current += 1
+      setBills(nextBills)
+      void persistAppStateNow({ bills: nextBills }, { force: true }).catch((e) => {
+        console.error('[Google Sheets save]', e)
+        setSheetsConnectionError(e?.message || String(e))
+      })
     },
-    [bills]
+    [persistAppStateNow]
   )
 
   const getBill = useCallback(
@@ -318,8 +367,9 @@ export function AppProvider({ children }) {
 
   const deleteCompany = useCallback(
     (id) => {
+      const snap = latestAppStateRef.current
       if (isDriveLayoutConfigured()) {
-        bills
+        snap.bills
           .filter((b) => b.company_id === id)
           .forEach((b) => {
             void removeBillSheetFromDrive(b).catch((e) =>
@@ -327,11 +377,22 @@ export function AppProvider({ children }) {
             )
           })
       }
-      setCompanies((prev) => prev.filter((c) => c.id !== id))
-      setClients((prev) => prev.filter((c) => c.company_id !== id))
-      setBills((prev) => prev.filter((b) => b.company_id !== id))
+      const nextCompanies = snap.companies.filter((c) => c.id !== id)
+      const nextClients = snap.clients.filter((c) => c.company_id !== id)
+      const nextBills = snap.bills.filter((b) => b.company_id !== id)
+      saveGenerationRef.current += 1
+      setCompanies(nextCompanies)
+      setClients(nextClients)
+      setBills(nextBills)
+      void persistAppStateNow(
+        { companies: nextCompanies, clients: nextClients, bills: nextBills },
+        { force: true }
+      ).catch((e) => {
+        console.error('[Google Sheets save]', e)
+        setSheetsConnectionError(e?.message || String(e))
+      })
     },
-    [bills]
+    [persistAppStateNow]
   )
 
   const value = {

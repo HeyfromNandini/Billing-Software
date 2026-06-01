@@ -24,7 +24,7 @@ export async function fetchAppDataFromSheets() {
   return normalizePayload(json)
 }
 
-export async function saveAppDataToSheets(payload) {
+export async function saveAppDataToSheets(payload, options = {}) {
   if (!isGoogleSheetsConfigured()) return
   await billingPostJson(
     '/app-data',
@@ -33,6 +33,7 @@ export async function saveAppDataToSheets(payload) {
       clients: payload.clients ?? [],
       bills: payload.bills ?? [],
     },
-    'Google Sheets save (POST)'
+    'Google Sheets save (POST)',
+    { force: options.force === true }
   )
 }

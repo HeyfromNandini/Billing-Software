@@ -34,6 +34,19 @@ app.use(
   })
 )
 
+/** Vercel `api/billing/[...path]` may pass `/health` instead of `/api/billing/health`. */
+app.use((req, _res, next) => {
+  const raw = req.url || ''
+  const q = raw.indexOf('?')
+  const path = q >= 0 ? raw.slice(0, q) : raw
+  const qs = q >= 0 ? raw.slice(q) : ''
+  if (path && !path.startsWith('/api/billing')) {
+    const suffix = path.startsWith('/') ? path : `/${path}`
+    req.url = `/api/billing${suffix}${qs}`
+  }
+  next()
+})
+
 function billingSecretOk(req) {
   const secret = process.env.BILLING_API_SECRET?.trim()
   if (!secret) return true

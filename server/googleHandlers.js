@@ -29,6 +29,24 @@ function appDataCounts(data) {
   }
 }
 
+function billIdSet(bills) {
+  return new Set((Array.isArray(bills) ? bills : []).map((b) => b?.id).filter(Boolean))
+}
+
+/** Allow fewer bills when removed ids match the count drop (intentional delete). Block wipe-all. */
+function allowsAppDataBillShrink(existingBills, incomingBills) {
+  const existing = Array.isArray(existingBills) ? existingBills : []
+  const incoming = Array.isArray(incomingBills) ? incomingBills : []
+  if (incoming.length === 0 && existing.length > 0) return false
+  const removedCount = existing.length - incoming.length
+  if (removedCount <= 0) return true
+  const existingIds = billIdSet(existing)
+  const incomingIds = billIdSet(incoming)
+  const missingFromExisting = [...existingIds].filter((id) => !incomingIds.has(id))
+  const newInIncoming = [...incomingIds].filter((id) => !existingIds.has(id))
+  return missingFromExisting.length - newInIncoming.length === removedCount
+}
+
 function timestampForBackupFilename() {
   return new Date().toISOString().replace(/[:.]/g, '-')
 }
@@ -85,13 +103,7 @@ function loadGoogleAuth() {
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/drive',
   ]
-  if (keyFile) {
-    const p = resolve(process.cwd(), keyFile)
-    if (!existsSync(p)) {
-      throw new Error(`GOOGLE_SERVICE_ACCOUNT_KEY_FILE not found: ${p}`)
-    }
-    return new google.auth.GoogleAuth({ keyFile: p, scopes })
-  }
+  // JSON first — required on Vercel/serverless (no key file on disk).
   if (jsonEnv) {
     let credentials
     try {
@@ -101,7 +113,17 @@ function loadGoogleAuth() {
     }
     return new google.auth.GoogleAuth({ credentials, scopes })
   }
-  throw new Error('Set GOOGLE_SERVICE_ACCOUNT_KEY_FILE or GOOGLE_SERVICE_ACCOUNT_JSON')
+  if (keyFile) {
+    const p = resolve(process.cwd(), keyFile)
+    if (!existsSync(p)) {
+      throw new Error(
+        `GOOGLE_SERVICE_ACCOUNT_KEY_FILE not found: ${p}. ` +
+          'On Vercel/Netlify set GOOGLE_SERVICE_ACCOUNT_JSON to the full service account JSON (one line).'
+      )
+    }
+    return new google.auth.GoogleAuth({ keyFile: p, scopes })
+  }
+  throw new Error('Set GOOGLE_SERVICE_ACCOUNT_JSON (cloud) or GOOGLE_SERVICE_ACCOUNT_KEY_FILE (local)')
 }
 
 let cachedClients = null
@@ -261,7 +283,12 @@ export async function saveAppData(body, options = {}) {
     throw new AppDataWriteRejectedError(message, { incoming: incomingCounts, parseOk: false })
   }
 
-  if (!existingMeta.empty && existingCounts.bills > incomingCounts.bills && !force) {
+  if (
+    !existingMeta.empty &&
+    existingCounts.bills > incomingCounts.bills &&
+    !force &&
+    !allowsAppDataBillShrink(existing.bills, payload.bills)
+  ) {
     const message =
       `AppData write rejected: existing has ${existingCounts.bills} bills but incoming payload has ${incomingCounts.bills}. ` +
       'Pass force (header x-billing-app-data-force: 1, query ?force=1, or body __appDataForce: true) to override.'

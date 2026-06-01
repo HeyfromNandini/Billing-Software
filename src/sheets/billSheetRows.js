@@ -32,6 +32,113 @@ function sortedCustomColumns(client) {
   )
 }
 
+function slugColumnId(name) {
+  const s = String(name ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return s || 'custom'
+}
+
+/** Place common extra columns next to related fixed columns in the table. */
+function defaultOrderForCustomHeader(name) {
+  const n = normHeader(name)
+  if (n.includes('invoice') && (n.includes('2') || n.includes('second') || n.endsWith(' 2'))) return 5
+  if (n.includes('lr') || n.includes('challan')) return 6
+  return 12
+}
+
+function entryMatchKey(e) {
+  const d = String(e?.date ?? '').trim()
+  const v = String(e?.vehicle_number ?? '').trim().toUpperCase()
+  const inv = String(e?.invoice_number ?? '').trim()
+  return `${d}|${v}|${inv}`
+}
+
+/** Fill empty entry.custom fields from a sheet parse (matched by date + vehicle + invoice). */
+export function mergeEntryCustomFromSheetEntries(appEntries, sheetEntries, customColumnIds) {
+  if (!Array.isArray(appEntries) || !Array.isArray(sheetEntries) || !customColumnIds?.length) {
+    return { entries: appEntries, changed: false }
+  }
+  const byKey = new Map()
+  for (const se of sheetEntries) {
+    const key = entryMatchKey(se)
+    if (key !== '||') byKey.set(key, se)
+  }
+  let changed = false
+  const next = appEntries.map((e, i) => {
+    const se = byKey.get(entryMatchKey(e)) ?? sheetEntries[i]
+    if (!se?.custom) return e
+    const custom = { ...(e.custom || {}) }
+    let rowChanged = false
+    for (const id of customColumnIds) {
+      const appVal = String(custom[id] ?? '').trim()
+      const sheetVal = String(se.custom[id] ?? '').trim()
+      if (!appVal && sheetVal) {
+        custom[id] = se.custom[id]
+        rowChanged = true
+      }
+    }
+    if (!rowChanged) return e
+    changed = true
+    return { ...e, custom }
+  })
+  return { entries: changed ? next : appEntries, changed }
+}
+
+/**
+ * Build custom column defs from non-fixed headers (sheet may have columns not yet on the client).
+ * @returns {{ col: { id, name, order }, headerIdx: number }[]}
+ */
+export function discoverCustomColumnsFromHeaders(headers, extraHeaderIndices, existingCustoms = []) {
+  const existingByNorm = new Map()
+  for (const c of existingCustoms || []) {
+    const n = normHeader(c.name || c.id || '')
+    if (n) existingByNorm.set(n, c)
+  }
+  const usedIds = new Set((existingCustoms || []).map((c) => c.id).filter(Boolean))
+  const out = []
+
+  for (const headerIdx of extraHeaderIndices) {
+    const name = String(headers[headerIdx] ?? '').trim()
+    if (!name) continue
+    const norm = normHeader(name)
+    let col = existingByNorm.get(norm)
+    if (!col) {
+      let baseId = `col-${slugColumnId(name)}`
+      let id = baseId
+      let n = 0
+      while (usedIds.has(id)) {
+        n += 1
+        id = `${baseId}-${n}`
+      }
+      usedIds.add(id)
+      col = { id, name, order: defaultOrderForCustomHeader(name) }
+      existingByNorm.set(norm, col)
+    }
+    out.push({ col, headerIdx })
+  }
+  return out
+}
+
+/** Union custom column defs by normalized header name (keeps first id). */
+export function mergeCustomColumnDefs(existing = [], incoming = []) {
+  const byNorm = new Map()
+  for (const c of [...existing, ...incoming]) {
+    if (!c?.name && !c?.id) continue
+    const norm = normHeader(c.name || c.id || '')
+    if (!norm || byNorm.has(norm)) continue
+    const orderRaw = Number(c.order) || defaultOrderForCustomHeader(c.name)
+    byNorm.set(norm, {
+      id: c.id,
+      name: String(c.name || c.id).trim(),
+      order: Math.max(1, Math.min(orderRaw, 12)),
+    })
+  }
+  return [...byNorm.values()]
+}
+
 /** Rate cell for sheet export — matches on-screen table (per-row rate, else Extra per ton). */
 function entryRateCellForSheet(bill, entry) {
   return displayEntryRate(entry, String(bill?.rate_extra_per_ton ?? '').trim(), '')
@@ -212,7 +319,7 @@ function findHeaderRowIndex(values, startAt) {
  * Parse sheet grid → fields to merge into bill (and entries).
  * @param {string[][]} values
  * @param {object} client — current client (custom column defs)
- * @returns {{ billPatch: object } | null}
+ * @returns {{ billPatch: object, customColumns: object[] } | null}
  */
 export function parseBillFromSheetValues(values, client) {
   if (!values?.length) return null
@@ -244,8 +351,6 @@ export function parseBillFromSheetValues(values, client) {
     if (key && colByKey[key] === undefined) colByKey[key] = idx
   })
 
-  const customs = sortedCustomColumns(client)
-
   const used = new Set(Object.values(colByKey).filter((x) => x != null))
   const extraHeaderIndices = []
   headers.forEach((h, i) => {
@@ -253,6 +358,13 @@ export function parseBillFromSheetValues(values, client) {
     if (!normHeader(h)) return
     extraHeaderIndices.push(i)
   })
+
+  const metaCustoms = Array.isArray(meta.custom_columns) ? meta.custom_columns : []
+  const discovered = discoverCustomColumnsFromHeaders(headers, extraHeaderIndices, [
+    ...sortedCustomColumns(client),
+    ...metaCustoms,
+  ])
+  const customColumns = mergeCustomColumnDefs(sortedCustomColumns(client), discovered.map((d) => d.col))
 
   const entries = []
   for (let r = headerIdx + 1; r < values.length; r += 1) {
@@ -265,9 +377,8 @@ export function parseBillFromSheetValues(values, client) {
     if (srVal === '' || srVal == null) continue
 
     const custom = {}
-    customs.forEach((c, j) => {
-      const ci = extraHeaderIndices[j]
-      custom[c.id] = ci != null ? row[ci] ?? '' : ''
+    discovered.forEach(({ col, headerIdx: hi }) => {
+      custom[col.id] = hi != null ? (row[hi] ?? '') : ''
     })
 
     const entry = {
@@ -327,7 +438,7 @@ export function parseBillFromSheetValues(values, client) {
     mergeTitleRowIntoBillPatch(values[1], billPatch)
   }
 
-  return { billPatch }
+  return { billPatch, customColumns }
 }
 
 function sortKeysObj(obj) {

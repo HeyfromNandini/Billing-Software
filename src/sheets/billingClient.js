@@ -43,8 +43,8 @@ export async function billingGet(path, label) {
   return readBillingResponse(res, label)
 }
 
-/** @param {string} path */
-export async function billingPostJson(path, body, label) {
+/** @param {string} path @param {{ force?: boolean }} [options] */
+export async function billingPostJson(path, body, label, options = {}) {
   const url = billingApiUrl(path)
   const res = await fetchBillingBackend(
     url,
@@ -56,6 +56,7 @@ export async function billingPostJson(path, body, label) {
         'Cache-Control': 'no-cache, no-store',
         Pragma: 'no-cache',
         ...secretHeaders(),
+        ...(options.force ? { 'x-billing-app-data-force': '1' } : {}),
       },
       body: JSON.stringify(body),
     },
