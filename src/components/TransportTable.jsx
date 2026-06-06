@@ -4,6 +4,8 @@ import EditableEntryRow from './EditableEntryRow'
 import { FIXED_HEADERS } from '../sheets/fixedHeaders.js'
 import { buildColumnLayout, buildPdfColumnLayout } from '../sheets/columnLayout.js'
 
+const REORDER_DRAG_SLOP_PX = 5
+
 export { FIXED_HEADERS, buildColumnLayout, buildPdfColumnLayout }
 
 /** Relative width weight for PDF colgroup (normalized to 100% in appendPdfColgroup). */
