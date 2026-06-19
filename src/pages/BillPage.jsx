@@ -795,15 +795,23 @@ export default function BillPage() {
     [billId, touchLocalAndUpdateBill, rateType, rateFixed, rateVariable]
   )
 
-  const billRateRule =
-    rateType === 'variable' && (rateVariable.rate_base_weight != null || rateVariable.rate_base_amount != null)
-      ? {
-          rate_type: 'variable',
-          rate_base_weight: rateVariable.rate_base_weight,
-          rate_base_amount: rateVariable.rate_base_amount,
-          rate_extra_per_ton: rateVariable.rate_extra_per_ton,
-        }
-      : null
+  const billRateRule = useMemo(
+    () =>
+      rateType === 'variable' && (rateVariable.rate_base_weight != null || rateVariable.rate_base_amount != null)
+        ? {
+            rate_type: 'variable',
+            rate_base_weight: rateVariable.rate_base_weight,
+            rate_base_amount: rateVariable.rate_base_amount,
+            rate_extra_per_ton: rateVariable.rate_extra_per_ton,
+          }
+        : null,
+    [
+      rateType,
+      rateVariable.rate_base_weight,
+      rateVariable.rate_base_amount,
+      rateVariable.rate_extra_per_ton,
+    ]
+  )
 
   const handleLoadFromSheet = useCallback(() => {
     if (!sheetConflict || !bill) return

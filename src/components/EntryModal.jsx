@@ -24,7 +24,11 @@ export default function EntryModal({ isOpen, editingEntry, customColumns = [], d
   const from = defaultRouteFrom ?? DEFAULT_ROUTE.from
   const to = defaultRouteTo ?? DEFAULT_ROUTE.to
 
+  // Initialize form only when the modal opens or when switching edit target. Do not depend on
+  // rateRule/from/to/customColumns — parent re-renders (e.g. Drive sync) would reset in-progress input.
   useEffect(() => {
+    if (!isOpen) return
+
     if (editingEntry) {
       const custom = {}
       ;(customColumns || []).forEach((col) => { custom[col.id] = (editingEntry.custom && editingEntry.custom[col.id]) ?? '' })
@@ -56,7 +60,7 @@ export default function EntryModal({ isOpen, editingEntry, customColumns = [], d
       }
       setForm(initial)
     }
-  }, [isOpen, editingEntry?.id, from, to, rateFixed, rateType, rateRule])
+  }, [isOpen, editingEntry?.id])
 
   useEffect(() => {
     saveSubmitLockRef.current = false
